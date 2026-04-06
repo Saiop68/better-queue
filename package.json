@@ -1,0 +1,56 @@
+{
+  "name": "better-queue",
+  "version": "1.0.0",
+  "description": "High-performance, memory-efficient, distributed rate limiter and job queue for Node.js — Redis-backed, zero per-limiter timers",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "scripts"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean --sourcemap",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "typecheck": "tsc --noEmit",
+    "example:basic": "ts-node -r tsconfig-paths/register examples/basic.ts",
+    "example:discord": "ts-node -r tsconfig-paths/register examples/discord-bot.ts",
+    "example:benchmark": "ts-node -r tsconfig-paths/register examples/benchmark.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "rate-limiter",
+    "job-queue",
+    "redis",
+    "bottleneck",
+    "distributed",
+    "memory-efficient",
+    "discord",
+    "typescript"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ioredis": "^5.3.2",
+    "lru-cache": "^11.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.5",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "tsup": "^8.0.2",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
