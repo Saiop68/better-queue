@@ -1,22 +1,5 @@
 import Redis, { type RedisOptions } from 'ioredis';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
-// ── Lua script source (loaded once at module level) ────────────────────────
-const SCRIPTS_DIR = join(__dirname, '..', 'scripts');
-
-function loadScript(name: string): string {
-  return readFileSync(join(SCRIPTS_DIR, name), 'utf8');
-}
-
-const LUA = {
-  enqueue:     loadScript('enqueue.lua'),
-  dequeue:     loadScript('dequeue.lua'),
-  complete:    loadScript('complete.lua'),
-  wakeupCheck: loadScript('wakeup_check.lua'),
-  recover:     loadScript('recover.lua'),
-  stats:       loadScript('stats.lua'),
-} as const;
+import { LUA } from './lua-scripts';
 
 // ── Typed Redis command extensions ─────────────────────────────────────────
 declare module 'ioredis' {

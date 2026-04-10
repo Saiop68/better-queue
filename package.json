@@ -17,7 +17,8 @@
     "scripts"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts --clean --sourcemap",
+    "build:lua": "node build-lua.js",
+    "build": "npm run build:lua && tsup src/index.ts --format cjs,esm --dts --clean --sourcemap",
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
     "typecheck": "tsc --noEmit",
     "example:basic": "ts-node -r tsconfig-paths/register examples/basic.ts",
