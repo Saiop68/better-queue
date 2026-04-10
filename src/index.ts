@@ -25,6 +25,8 @@
  */
 
 export { WorkerPool } from './WorkerPool';
+export { LimiterManager, LimiterWrapper, limiterManager } from './LimiterManager';
+export type { FeatureConfig, ScheduleJobOptions } from './LimiterManager';
 export { DistributedLimiter } from './DistributedLimiter';
 export { KEYS } from './constants';
 export {

@@ -54,7 +54,8 @@ async function main() {
     if (raw[0] === 'ok') {
       const done = await redis.bqComplete(
         KEYS.running('dbg'), KEYS.inflight('dbg'), KEYS.jobs('dbg'), KEYS.notify,
-        'job-abc-123', 'dbg',
+        KEYS.meta('dbg'), KEYS.lastRun('dbg'),
+        'job-abc-123', 'dbg', '3600',
       );
       console.log('6. Complete result:', done);
     } else {

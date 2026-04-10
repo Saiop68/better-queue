@@ -47,8 +47,11 @@ declare module 'ioredis' {
       inflightKey: string,
       jobsKey: string,
       notifyKey: string,
+      metaKey: string,
+      lastRunKey: string,
       jobId: string,
       queueId: string,
+      ttl: string,
     ): Promise<number>;
 
     bqWakeupCheck(
@@ -90,7 +93,7 @@ function registerCommands(redis: Redis): void {
   });
 
   redis.defineCommand('bqComplete', {
-    numberOfKeys: 4,
+    numberOfKeys: 6,  // running, inflight, jobs, notify, meta, lastRun
     lua: LUA.complete,
   });
 

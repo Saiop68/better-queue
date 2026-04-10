@@ -200,8 +200,11 @@ class Worker {
         KEYS.inflight(queueId),
         KEYS.jobs(queueId),
         KEYS.notify,
+        KEYS.meta(queueId),     // NEW: for TTL refresh + idle cleanup signal
+        KEYS.lastRun(queueId),  // NEW: deleted immediately when queue goes idle
         jobId,
         queueId,
+        String(this.pool.defaultTtl),
       );
     } catch {
       // Best-effort — not fatal

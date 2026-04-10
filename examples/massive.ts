@@ -27,7 +27,7 @@ async function main() {
   // Start with a large worker pool for huge throughput
   const pool = await WorkerPool.create({
     redis: { host: '127.0.0.1', port: 6379 },
-    workers: 32, // More workers handle the firehose better
+    workers: 1000, // More workers handle the firehose better
     tickIntervalMs: 50,
   });
 
@@ -42,8 +42,8 @@ async function main() {
   const limiters = Array.from({ length: GUILD_COUNT }, (_, i) => {
     return new DistributedLimiter({
       id: `guild:massive:${i}`,
-      maxConcurrent: 50, // Let it burst 50 concurrently
-      minTime: 20,       // 20ms between jobs = strictly 50/sec max to avoid 429s globally
+      maxConcurrent: 100000, // Let it burst 50 concurrently
+      minTime: 0,       // 20ms between jobs = strictly 50/sec max to avoid 429s globally
       ttl: 60 * 60,      // Keep alive for 1h
     });
   });

@@ -31,7 +31,7 @@ async function benchThroughput(): Promise<void> {
 
   const limiter = new DistributedLimiter({
     id: 'bench:throughput',
-    maxConcurrent: 32,
+    maxConcurrent: 100,
     minTime: 0,
   });
 
@@ -62,7 +62,7 @@ async function benchMemoryStability(): Promise<void> {
   console.log('\n📊 Benchmark 2: Memory stability — 1,000 limiters, 50 jobs each\n');
 
   const LIMITER_COUNT = 1_000;
-  const JOBS_PER_LIMITER = 50;
+  const JOBS_PER_LIMITER = 500;
   const heapBefore = heapMB();
 
   console.log(`  Creating ${formatNum(LIMITER_COUNT)} DistributedLimiter instances…`);
@@ -113,15 +113,15 @@ async function benchMemoryStability(): Promise<void> {
 async function benchRateLimitedBurst(): Promise<void> {
   console.log('\n📊 Benchmark 3: Rate-limited burst — 50 limiters, minTime=100ms\n');
 
-  const LIMITER_COUNT = 50;
-  const JOBS_PER = 10;
+  const LIMITER_COUNT = 500;
+  const JOBS_PER = 50;
 
   const limiters = Array.from(
     { length: LIMITER_COUNT },
     (_, i) =>
       new DistributedLimiter({
         id: `bench:ratelimit:${i}`,
-        maxConcurrent: 1,
+        maxConcurrent: 100,
         minTime: 100,
       }),
   );
@@ -153,7 +153,7 @@ async function main() {
 
   const pool = await WorkerPool.create({
     redis: { host: '127.0.0.1', port: 6379 },
-    workers: 16,
+    workers: 30,
     tickIntervalMs: 25,
   });
 
