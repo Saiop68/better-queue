@@ -24,7 +24,8 @@
     "example:discord": "ts-node -r tsconfig-paths/register examples/discord-bot.ts",
     "example:benchmark": "ts-node -r tsconfig-paths/register examples/benchmark.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepare": "npm run build"
   },
   "keywords": [
     "rate-limiter",
