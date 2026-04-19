@@ -80,7 +80,7 @@ const DEFAULT_CONFIG = Object.freeze<Required<Omit<FeatureConfig, 'trackDoneStat
   reservoirRefreshInterval: 1_000,
   minTime:                  0,
   timeout:                  30_000,
-  ttl:                      3_600,   // 1 hour — idle queues auto-expire
+  ttl:                      600,     // 10 minutes — idle queues auto-expire in Redis
   maxRetries:               3,
 });
 
@@ -213,8 +213,8 @@ export class LimiterManager {
   private constructor() {
     this._limiterCache = new LRUCache<string, LimiterWrapper>({
       max: 10_000,
-      // 2h TTL — well beyond any in-flight Discord API call
-      ttl: 1_000 * 60 * 60 * 2,
+      // 10 min TTL — well beyond any in-flight Discord API call
+      ttl: 1_000 * 60 * 10,
       // DistributedLimiter has no timers — nothing to clean up on eviction
     });
 
