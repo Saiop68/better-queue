@@ -216,6 +216,7 @@ export class LimiterManager {
       // 10 min TTL — well beyond any in-flight Discord API call
       ttl: 1_000 * 60 * 10,
       // DistributedLimiter has no timers — nothing to clean up on eviction
+      ttlAutopurge: true,
     });
 
     this._featureConfigs = new LRUCache<string, FeatureConfig>({
