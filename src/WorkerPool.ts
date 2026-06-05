@@ -3,8 +3,13 @@ import type { RedisOptions } from 'ioredis';
 import { EventEmitter } from 'node:events';
 import { createRedisClient, createBlockingClient } from './RedisClient';
 import { KEYS, DEFAULT_WORKER_COUNT, DEFAULT_TICK_INTERVAL_MS, DEFAULT_VISIBILITY_TIMEOUT_MS, BRPOP_TIMEOUT_SECONDS, MAX_DRAIN_PER_NOTIFY, WAKEUP_BATCH_SIZE } from './constants';
-import { WorkerPoolNotInitializedError, JobMaxRetriesError } from './errors';
+import { WorkerPoolNotInitializedError, JobMaxRetriesError, OrphanedJobError } from './errors';
 import type { WorkerPoolOptions, PendingJob, JobPayload, DequeueResult } from './types';
+
+/** Default ms before an unexecuted pendingJobs entry is considered orphaned. */
+const DEFAULT_PENDING_JOB_TIMEOUT_MS = 300_000; // 5 minutes
+/** How often the orphan sweeper runs. */
+const SWEEPER_INTERVAL_MS = 30_000; // 30 seconds
 
 // ── Singleton guard ────────────────────────────────────────────────────────
 let globalPool: WorkerPool | null = null;
@@ -251,17 +256,20 @@ export class WorkerPool extends EventEmitter {
   private readonly redisOptions: RedisOptions;
   private readonly tickIntervalMs: number;
   private readonly visibilityTimeoutMs: number;
+  private readonly pendingJobTimeoutMs: number;
   private tickerHandle: ReturnType<typeof setInterval> | null = null;
+  private sweeperHandle: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
 
   private constructor(options: WorkerPoolOptions) {
     super();
 
-    const workerCount         = options.workers          ?? DEFAULT_WORKER_COUNT;
-    this.tickIntervalMs       = options.tickIntervalMs   ?? DEFAULT_TICK_INTERVAL_MS;
-    this.visibilityTimeoutMs  = options.visibilityTimeoutMs ?? DEFAULT_VISIBILITY_TIMEOUT_MS;
-    this.defaultTtl           = 86_400;
-    this.redisOptions         = options.redis;
+    const workerCount             = options.workers             ?? DEFAULT_WORKER_COUNT;
+    this.tickIntervalMs           = options.tickIntervalMs      ?? DEFAULT_TICK_INTERVAL_MS;
+    this.visibilityTimeoutMs      = options.visibilityTimeoutMs ?? DEFAULT_VISIBILITY_TIMEOUT_MS;
+    this.pendingJobTimeoutMs      = options.pendingJobTimeoutMs ?? DEFAULT_PENDING_JOB_TIMEOUT_MS;
+    this.defaultTtl               = 86_400;
+    this.redisOptions             = options.redis;
 
     this.commandClient = createRedisClient(options.redis);
 
@@ -299,6 +307,13 @@ export class WorkerPool extends EventEmitter {
     }
 
     this.startTicker();
+    if (this.pendingJobTimeoutMs > 0) this.startSweeper();
+
+    // Ensure pool is cleaned up on process exit so connections and closures
+    // don't leak in long-running applications.
+    const shutdown = (): void => { void this.stop(); };
+    process.once('SIGINT',  shutdown);
+    process.once('SIGTERM', shutdown);
   }
 
   /**
@@ -314,6 +329,18 @@ export class WorkerPool extends EventEmitter {
       clearInterval(this.tickerHandle);
       this.tickerHandle = null;
     }
+
+    // Stop orphan sweeper
+    if (this.sweeperHandle) {
+      clearInterval(this.sweeperHandle);
+      this.sweeperHandle = null;
+    }
+
+    // Reject any remaining orphaned pending jobs before closing connections
+    for (const [jobId, pending] of this.pendingJobs) {
+      pending.reject(new OrphanedJobError(jobId));
+    }
+    this.pendingJobs.clear();
 
     // Stop all workers
     await Promise.all(this.workers.map((w) => w.stop()));
@@ -368,5 +395,27 @@ export class WorkerPool extends EventEmitter {
     this.tickerHandle = setInterval(tick, this.tickIntervalMs);
     // unref() allows Node.js to exit if this is the only remaining handle
     this.tickerHandle.unref();
+  }
+
+  /**
+   * Periodically scans `pendingJobs` and rejects any entry that has been
+   * waiting longer than `pendingJobTimeoutMs`. This catches jobs whose Redis
+   * BRPOP notification was lost (e.g. Redis restart, network blip) and would
+   * otherwise hold their closures in memory forever.
+   */
+  private startSweeper(): void {
+    const sweep = (): void => {
+      const cutoff = Date.now() - this.pendingJobTimeoutMs;
+      for (const [jobId, pending] of this.pendingJobs) {
+        if (pending.enqueuedAt < cutoff) {
+          this.pendingJobs.delete(jobId);
+          pending.reject(new OrphanedJobError(jobId));
+          this.emit('failed', jobId, new OrphanedJobError(jobId));
+        }
+      }
+    };
+
+    this.sweeperHandle = setInterval(sweep, SWEEPER_INTERVAL_MS);
+    this.sweeperHandle.unref();
   }
 }

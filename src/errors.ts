@@ -44,3 +44,20 @@ export class RedisCommandError extends BetterQueueError {
     this.cause = cause;
   }
 }
+
+/**
+ * Thrown when a job's closure is evicted from `pendingJobs` without having
+ * been executed. This happens when the BRPOP notification was lost (e.g. Redis
+ * restart / network blip) and the orphan sweeper detected the stale entry, or
+ * when the WorkerPool was stopped while the job was still waiting.
+ */
+export class OrphanedJobError extends BetterQueueError {
+  constructor(public readonly jobId: string) {
+    super(
+      `Job ${jobId} was evicted from the pending-jobs map without executing. ` +
+      `The Redis notification was likely lost. The job may still be enqueued ` +
+      `in Redis and will be retried when crash-recovery runs.`,
+    );
+    this.name = 'OrphanedJobError';
+  }
+}

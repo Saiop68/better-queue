@@ -110,6 +110,8 @@ export interface PendingJob {
   readonly reject: (reason: unknown) => void;
   /** Max retries (mirrored from payload for retry logic). */
   readonly maxRetries: number;
+  /** Unix ms when this entry was inserted — used by orphan sweeper. */
+  readonly enqueuedAt: number;
 }
 
 // ── Schedule options ──────────────────────────────────────────────────────────
@@ -146,6 +148,11 @@ export interface WorkerPoolOptions {
   readonly tickIntervalMs?: number;
   /** Jobs older than this (ms) in inflight are re-queued on startup. @default 300000 */
   readonly visibilityTimeoutMs?: number;
+  /**
+   * How long (ms) a pendingJobs entry may live before the sweeper rejects it
+   * as orphaned. Set to 0 to disable the sweeper. @default 300000 (5 min)
+   */
+  readonly pendingJobTimeoutMs?: number;
 }
 
 // ── Dequeue result ────────────────────────────────────────────────────────────

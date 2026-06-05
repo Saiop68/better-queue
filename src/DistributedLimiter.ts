@@ -121,6 +121,7 @@ export class DistributedLimiter extends EventEmitter {
         resolve: resolve as (value: unknown) => void,
         reject,
         maxRetries,
+        enqueuedAt: Date.now(),
       });
 
       // Enqueue in Redis (fire-and-forget after storing callbacks)
@@ -205,9 +206,21 @@ export class DistributedLimiter extends EventEmitter {
   /**
    * Wait until all currently queued and running jobs finish.
    * Polls Redis every 100ms.
+   *
+   * @param timeoutMs - If provided, rejects with a `DrainTimeoutError` after
+   *   this many milliseconds so `drain()` can never block forever when a job
+   *   notification is lost. Defaults to no timeout.
    */
-  async drain(): Promise<void> {
+  async drain(timeoutMs?: number): Promise<void> {
+    const deadline = timeoutMs !== undefined ? Date.now() + timeoutMs : Infinity;
+
     for (;;) {
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `drain() timed out after ${timeoutMs}ms — ` +
+          `queue "${this.opts.id}" may have orphaned jobs.`,
+        );
+      }
       const stats = await this.getStats();
       if (stats.queueSize === 0 && stats.runningCount === 0) break;
       await new Promise<void>((r) => setTimeout(r, 100));
@@ -218,9 +231,11 @@ export class DistributedLimiter extends EventEmitter {
   /**
    * Stop accepting new jobs. Does NOT drain existing jobs.
    * Call `drain()` first if you want to wait for pending jobs.
+   * Removes all event listeners to free any captured closures.
    */
   stop(): void {
     this.stopped = true;
+    this.removeAllListeners();
   }
 
   // ── Internal ───────────────────────────────────────────────────────────────

@@ -17,6 +17,7 @@
 
 import { LRUCache } from 'lru-cache';
 import { DistributedLimiter } from './DistributedLimiter';
+import { WorkerPool } from './WorkerPool';
 import type { LimiterOptions } from './types';
 
 // ── Feature config type ────────────────────────────────────────────────────
@@ -215,8 +216,13 @@ export class LimiterManager {
       max: 10_000,
       // 10 min TTL — well beyond any in-flight Discord API call
       ttl: 1_000 * 60 * 10,
-      // DistributedLimiter has no timers — nothing to clean up on eviction
       ttlAutopurge: true,
+      // CRITICAL: call stop() on every eviction (TTL expiry, LRU displacement, or
+      // manual delete). This ensures removeAllListeners() always fires, preventing
+      // the silent event-listener leak on LRU cache churn.
+      dispose: (wrapper) => {
+        wrapper.stop();
+      },
     });
 
     this._featureConfigs = new LRUCache<string, FeatureConfig>({
@@ -291,32 +297,86 @@ export class LimiterManager {
   }
 
   /**
+   * Remove a single guild+feature limiter from the cache.
+   * The limiter is stopped immediately, freeing its event listeners.
+   *
+   * Previously a no-op because the method did not exist — NightmodeQueue was
+   * already trying to call this. Now it works.
+   *
+   * @example
+   * // In guildDelete or per-feature cleanup:
+   * limiterManager.removeLimiter(guildId, 'nightmode-scheduler');
+   */
+  removeLimiter(guildId: string, feature: string): void {
+    const key = `${guildId}::${feature}`;
+    // LRU dispose callback calls wrapper.stop() automatically on delete
+    this._limiterCache.delete(key);
+  }
+
+  /**
+   * Remove ALL limiters for a specific guild and stop them immediately.
+   * Call this from the `guildDelete` Discord event to free memory for
+   * guilds that have left — their limiters would otherwise sit in the LRU
+   * for up to 10 minutes.
+   *
+   * @example
+   * client.on('guildDelete', (guild) => {
+   *   limiterManager.removeGuildLimiters(guild.id);
+   * });
+   */
+  removeGuildLimiters(guildId: string): void {
+    const prefix = `${guildId}::`;
+    // LRUCache doesn't support prefix queries, so we collect keys to delete.
+    // This is O(n) but only fires on guildDelete — an infrequent event.
+    const toDelete: string[] = [];
+    for (const key of this._limiterCache.keys()) {
+      if (key.startsWith(prefix)) toDelete.push(key);
+    }
+    for (const key of toDelete) {
+      // dispose callback fires stop() on each deletion
+      this._limiterCache.delete(key);
+    }
+  }
+
+  /**
    * Stop and remove all cached limiters.
    * Call on graceful shutdown.
    */
   async clearAll(): Promise<void> {
-    // DistributedLimiter is stateless in JS — all state is in Redis.
-    // We just mark them stopped and clear the in-memory cache.
-    for (const wrapper of this._limiterCache.values()) {
-      wrapper.stop();
-    }
+    // dispose callback fires stop() on every entry automatically
     this._limiterCache.clear();
     this._featureConfigs.clear();
   }
 
   /**
    * Cache utilization stats — matches original LimiterManager.getStats() format.
+   * Now also exposes `pendingJobsSize` — the #1 indicator of a job-queue backlog.
+   * If this number climbs continuously, jobs are queuing faster than workers execute.
    */
   getStats() {
-    const limiterMax     = this._limiterCache.max  ?? 10_000;
-    const featureMax     = this._featureConfigs.max ?? 200;
-    const limiterUsage   = (this._limiterCache.size   / limiterMax)  * 100;
-    const featureUsage   = (this._featureConfigs.size / featureMax)  * 100;
+    const limiterMax   = this._limiterCache.max  ?? 10_000;
+    const featureMax   = this._featureConfigs.max ?? 200;
+    const limiterUsage = (this._limiterCache.size   / limiterMax)  * 100;
+    const featureUsage = (this._featureConfigs.size / featureMax)  * 100;
+
+    let pendingJobsSize = 0;
+    try {
+      pendingJobsSize = WorkerPool.getInstance().pendingJobs.size;
+    } catch {
+      // WorkerPool not yet initialized — safe to ignore
+    }
 
     if (limiterUsage > 80) {
       console.warn(
         `[BetterQueue] Limiter cache usage is high: ${limiterUsage.toFixed(1)}%` +
         ` (${this._limiterCache.size}/${limiterMax})`,
+      );
+    }
+
+    if (pendingJobsSize > 500) {
+      console.warn(
+        `[BetterQueue] pendingJobs backlog is high: ${pendingJobsSize} entries. ` +
+        `Jobs may be queuing faster than workers can drain them.`,
       );
     }
 
@@ -333,6 +393,8 @@ export class LimiterManager {
         usage: `${featureUsage.toFixed(1)}%`,
         ttl:   this._featureConfigs.ttl,
       },
+      // Primary leak indicator — monitor this value over time
+      pendingJobsSize,
     };
   }
 
