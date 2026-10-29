@@ -44,6 +44,32 @@ export interface LimiterOptions {
   readonly reservoirRefreshAmount?: number;
 
   /**
+   * Interval (ms) at which the reservoir is *incremented*.
+   *
+   * Unlike `reservoirRefreshAmount` (which RESETS the reservoir to a fixed
+   * value), `reservoirIncreaseAmount` ADDS tokens on every interval — the
+   * classic "tokens trickle back over time" behaviour.
+   *
+   * Requires `reservoir` to be set. Cannot be combined with
+   * `reservoirRefreshInterval` — the refresh (reset) wins if both are set.
+   * @default 0 (disabled)
+   */
+  readonly reservoirIncreaseInterval?: number;
+
+  /**
+   * Number of tokens ADDED to the reservoir on every increase interval.
+   * @default 0 (disabled)
+   */
+  readonly reservoirIncreaseAmount?: number;
+
+  /**
+   * Maximum value the reservoir may reach when using `reservoirIncreaseAmount`.
+   * `0` (or omitted) means unbounded.
+   * @default 0 (unbounded)
+   */
+  readonly reservoirIncreaseMaximum?: number;
+
+  /**
    * Default job priority for this limiter (1 = highest, 10 = lowest).
    * Individual `schedule()` calls can override this.
    * @default 5
@@ -78,6 +104,9 @@ export interface ResolvedLimiterOptions {
   readonly reservoir: number; // -1 means unlimited
   readonly reservoirRefreshInterval: number;
   readonly reservoirRefreshAmount: number;
+  readonly reservoirIncreaseInterval: number;
+  readonly reservoirIncreaseAmount: number;
+  readonly reservoirIncreaseMaximum: number;
   readonly priority: number;
   readonly ttl: number;
   readonly retryOnFailure: boolean;
@@ -98,6 +127,15 @@ export interface JobPayload {
   readonly retryCount: number;
   /** Unix timestamp (ms) when job was enqueued. Used for crash recovery. */
   readonly enqueuedAt: number;
+  /**
+   * Id of the WorkerPool that scheduled this job.
+   *
+   * The executable function is a JS closure and therefore lives in the
+   * scheduling process only. The owner id lets a worker that picks up a
+   * foreign job tell "another live process owns this" (requeue it) from
+   * "the owner is gone" (orphan — drop it).
+   */
+  readonly owner: string;
 }
 
 /** In-memory record stored in WorkerPool.pendingJobs Map — exists only while job is pending/running. */
@@ -112,6 +150,8 @@ export interface PendingJob {
   readonly maxRetries: number;
   /** Unix ms when this entry was inserted — used by orphan sweeper. */
   readonly enqueuedAt: number;
+  /** Queue this job belongs to — used to route pool events back to the limiter. */
+  readonly queueId: string;
 }
 
 // ── Schedule options ──────────────────────────────────────────────────────────
@@ -157,12 +197,19 @@ export interface WorkerPoolOptions {
 
 // ── Dequeue result ────────────────────────────────────────────────────────────
 
-export type DequeueStatus = 'ok' | 'empty' | 'concurrent_full' | 'rate_limited';
+export type DequeueStatus = 'ok' | 'empty' | 'blocked' | 'concurrent_full' | 'rate_limited';
 
 export interface DequeueResult {
   readonly status: DequeueStatus;
   readonly payload: string;
-  /** Unix ms when the caller should retry. Only set for `rate_limited`. */
+  /**
+   * Unix ms when the caller should retry.
+   *
+   * - `rate_limited`: when minTime / the reservoir allows the next job to run.
+   * - `empty`: when the earliest *pending* (not-yet-due) job becomes eligible.
+   * - `blocked`: the queue holds jobs owned by other processes; retry shortly.
+   * - `0`: nothing pending — no retry needed.
+   */
   readonly nextEligibleMs: number;
 }
 

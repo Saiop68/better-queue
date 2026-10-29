@@ -3,13 +3,15 @@
  * All keys are namespaced under `bq:` to avoid collisions.
  */
 export const KEYS = {
-  /** ZSET — pending jobs, score = earliest allowed start time (ms) */
+  /** ZSET — ready jobs, score = priority * 1e12 + arrival seq */
   jobs: (id: string) => `bq:${id}:jobs`,
+  /** ZSET — jobs not yet due (scheduleAt / retry backoff), score = due time (ms) */
+  delayed: (id: string) => `bq:${id}:delayed`,
   /** SET — job IDs of currently executing jobs */
   running: (id: string) => `bq:${id}:running`,
   /** HASH — jobId → full payload, for crash recovery */
   inflight: (id: string) => `bq:${id}:inflight`,
-  /** HASH — queue configuration (maxConcurrent, minTime, etc.) */
+  /** HASH — queue configuration (maxConcurrent, minTime, etc.) + arrival counter */
   meta: (id: string) => `bq:${id}:meta`,
   /** STRING (int) — current token count for reservoir */
   reservoir: (id: string) => `bq:${id}:reservoir`,
@@ -17,11 +19,27 @@ export const KEYS = {
   lastRun: (id: string) => `bq:${id}:lastRun`,
   /** STRING (ms) — timestamp of last reservoir refresh */
   lastRefresh: (id: string) => `bq:${id}:lastRefresh`,
-  /** LIST — worker notification channel (BRPOP) */
-  notify: 'bq:workers:notify',
+  /** STRING (ms) — timestamp of last reservoir increase */
+  lastIncrease: (id: string) => `bq:${id}:lastIncrease`,
+  /**
+   * LIST — per-pool notification channel.
+   *
+   * Each WorkerPool listens on its OWN channel so that a notification for
+   * pool A is never consumed by pool B. Without this, a second process would
+   * steal the first process's notification and its job would never run.
+   */
+  notifyPool: (poolId: string) => `bq:workers:notify:${poolId}`,
   /** ZSET — scheduled worker wakeups, score = wakeup time (ms) */
   wakeup: 'bq:global:wakeup',
+  /** ZSET — live WorkerPool registry, score = last heartbeat (ms) */
+  pools: 'bq:pools',
 } as const;
+
+/**
+ * How long (ms) a WorkerPool stays "live" without a heartbeat.
+ * A pool that stops heartbeating is considered dead.
+ */
+export const POOL_LIVE_WINDOW_MS = 30_000;
 
 /** Default TTL for all Redis keys (1 hour). Inactive queues auto-expire. */
 export const DEFAULT_TTL_SECONDS = 3_600;
@@ -58,3 +76,14 @@ export const DEFAULT_MAX_RETRIES = 3;
 
 /** Wakeup ticker batch size — max queues to wake per tick */
 export const WAKEUP_BATCH_SIZE = 100;
+
+/**
+ * Scale applied to the priority when composing a job's ZSET score.
+ *
+ * score = priority * PRIORITY_SCALE + arrivalSeq
+ *
+ * The priority occupies the high-order digits so a lower priority number
+ * always sorts first, while the arrival sequence keeps jobs with the same
+ * priority in FIFO order. Must match PRIORITY_SCALE in scripts/enqueue.lua.
+ */
+export const PRIORITY_SCALE = 1_000_000_000_000;

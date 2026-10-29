@@ -1,163 +1,161 @@
 # BetterQueue: Complete Architecture & Codebase Guide
 
-BetterQueue is a high-performance, distributed rate limiter and job queue designed specifically to replace `Bottleneck` in large-scale Node.js applications (like Discord bots operating in 10,000+ guilds). 
+BetterQueue is a high-performance, distributed rate limiter and job queue designed to replace `Bottleneck` in large-scale Node.js applications.
 
-It solves the fundamental flaws of Bottleneck at scale: **memory leaks from per-queue closures** and **CPU starvation from tens of thousands of idle `setInterval` timers**.
+It solves two structural problems with Bottleneck at scale: **memory growth from per-queue state** and **CPU starvation from tens of thousands of idle `setInterval` timers**.
 
 ---
 
 ## 1. The Core Philosophy
 
-In a typical 10,000 guild bot with 40 features per guild, you might have **400,000 potential rate limiters**. 
+In a typical 10,000 guild bot with 40 features per guild, you might have **400,000 potential rate limiters**.
 
-*   **Bottleneck's Approach:** 400,000 JS objects, each running a `setInterval` heartbeat every 250ms, storing waiting jobs as closures in RAM. Result: OOM crashes and uncollectable memory overhead.
-*   **BetterQueue's Approach:** **Zero per-limiter timers**. All queue state (waiting jobs, running counters, token buckets) lives purely in Redis. A single global "Worker Pool" pulls work using blocking Redis commands (`BRPOP`). If a guild is idle, its RAM and CPU footprint is exactly zero.
+*   **Bottleneck's approach:** 400,000 JS objects, each running a `setInterval` heartbeat every 250ms, storing waiting jobs as closures in RAM. Result: OOM crashes and uncollectable memory overhead.
+*   **BetterQueue's approach:** **zero per-limiter timers**. All queue state (waiting jobs, running counters, token buckets) lives in Redis. A single global "Worker Pool" pulls work using blocking Redis commands (`BRPOP`). If a guild is idle, its RAM and CPU footprint is exactly zero.
 
 ---
 
 ## 2. Redis Key Structure (The Source of Truth)
 
-Each active queue (e.g., `vcrole-voice-join` for `guild_123`) has a unique `id`. In Redis, this expands into several keys.
+Each active queue (e.g., `guild_123`) has a unique `id`. In Redis, this expands into several keys.
 
 ### Volatile Runtime Keys (Deleted immediately when the queue empties)
-*   **`bq:{id}:jobs` (ZSET)**: Pending jobs waiting to execute. Score = timestamp to execute.
-*   **`bq:{id}:running` (SET)**: IDs of jobs currently executing in Node.js. Used to enforce `maxConcurrent`.
-*   **`bq:{id}:inflight` (HASH)**: Crash recovery bookmark. JobId -> payload.
+*   **`bq:{id}:jobs` (ZSET)**: Ready jobs. Score = `priority × 1e12 + arrivalSeq`.
+*   **`bq:{id}:delayed` (ZSET)**: Jobs not yet due (`scheduleAt` / retry backoff). Score = due time in ms.
+*   **`bq:{id}:running` (SET)**: IDs of jobs currently executing. Used to enforce `maxConcurrent`.
+*   **`bq:{id}:inflight` (HASH)**: Crash recovery bookmark. JobId → payload.
 *   **`bq:{id}:lastRun` (STRING)**: Timestamp of the last time a job was dequeued. Used to enforce `minTime`.
+*   **`bq:{id}:reservoir` / `:lastRefresh` / `:lastIncrease` (STRING)**: Token-bucket state.
 
-### Persistent Keys (Auto-expire after 1 hour of inactivity)
-*   **`bq:{id}:meta` (HASH)**: The configuration for this specific queue (maxConcurrent, minTime, reservoir). Survives when the queue empties so cold-starts are fast.
+### Persistent Keys (Auto-expire after the configured TTL)
+*   **`bq:{id}:meta` (HASH)**: The configuration for this queue (maxConcurrent, minTime, reservoir, …) plus the monotonic `seq` arrival counter used to break priority ties. Survives when the queue empties so cold-starts are fast.
 
 ### Global Keys
-*   **`bq:workers:notify` (LIST)**: The central channel. When a queue has a job ready to run, its `id` is pushed here. Workers `BRPOP` on this list.
-*   **`bq:global:wakeup` (ZSET)**: The central waiting room for rate-limited queues. If a queue hits its `maxConcurrent` or `minTime`, it is parked here with a timestamp.
+*   **`bq:workers:notify:<poolId>` (LIST)**: Per-pool worker signal channel. Each WorkerPool `BRPOP`s only its own channel, so a notification can never be consumed by a different process.
+*   **`bq:global:wakeup` (ZSET)**: The central waiting room for rate-limited queues. Member = `<poolId>|<queueId>`, score = the time the queue becomes eligible.
+*   **`bq:pools` (ZSET)**: Live pool registry, score = last heartbeat timestamp. Self-cleaning: pools that stop heartbeating fall out of the live window.
 
 ---
 
 ## 3. The Codebase Step-by-Step
 
 ### `LimiterManager.ts` (The Drop-in API Wrapper)
-This is what your bot interacts with. It was designed to have the exact same API as your old Bottleneck manager so you don't have to rewrite your bot logic.
-*   **`registerFeatureConfig()`**: Stores your default rate limits (e.g., `maxConcurrent: 1`, `minTime: 1000`) in a simple memory map.
-*   **`getLimiter()`**: Checks a local `LRUCache`. If not found, instantiates a lightweight `DistributedLimiter`. 
+This is what your bot interacts with. It was designed to have the same API as a Bottleneck-based manager so you don't have to rewrite your bot logic.
+*   **`registerFeatureConfig()`**: Stores your default rate limits (e.g. `maxConcurrent: 1`, `minTime: 1000`) in an LRU map.
+*   **`getLimiter()`**: Checks a local `LRUCache`. If not found, instantiates a lightweight `DistributedLimiter`.
 *   **`LimiterWrapper`**: Exposes the `.schedule()` method. It wraps your job in a `Promise.race` to enforce the `timeout` parameter client-side.
 
 ### `DistributedLimiter.ts` (The Redis Delegate)
-A very thin class. It doesn't hold timers or job arrays. 
+A very thin class. It doesn't hold timers or job arrays.
 When you call `limiter.schedule(fn)`, it:
-1. Generates a unique Job ID.
-2. Puts the `fn` closure into the WorkerPool's `pendingJobs` Map in memory. (This is necessary because Redis can't store actual JS functions).
-3. Calls the `bqEnqueue` Lua script to tell Redis to queue the job.
+1. Generates a unique job ID.
+2. Puts the `fn` closure into the WorkerPool's `pendingJobs` Map in memory (necessary because Redis can't store JS functions).
+3. Calls the `bqEnqueue` Lua script to queue the job.
 
 ### `WorkerPool.ts` (The Engine)
 This is where the magic happens. You instantiate ONE of these per Node.js process.
-*   **The Workers (`workerLoop`)**: An array of async infinite loops. Each loop does exactly one thing: `await client.brpop(KEYS.notify)`. When a queue ID pops out, the worker delegates to the `bqDequeue` Lua script. If successful, it pulls the `fn` closure from `pendingJobs` and executes it.
-*   **The Ticker (`startTicker`)**: A single `setInterval` running every 50ms. It runs the `bqWakeupCheck` Lua script to see if any rate-limited queues in `bq:global:wakeup` are ready to run.
-*   **Error Handling**: If a job throws, it checks `retryCount`. If retries remain, it recalculates an exponential backoff time and re-enqueues the job. If out of retries, it resolves the promise with a `JobMaxRetriesError`.
+*   **The Workers**: An array of async infinite loops. Each loop does exactly one thing: `await client.brpop(KEYS.notifyPool(poolId))`. When a queue ID pops out, the worker delegates to the `bqDequeue` Lua script. If successful, it pulls the `fn` closure from `pendingJobs` and executes it.
+*   **The Ticker (`startTicker`)**: A single `setInterval` running every 50ms. It runs the `bqWakeupCheck` Lua script to see if any rate-limited queues in `bq:global:wakeup` are ready to run, and refreshes this pool's liveness heartbeat.
+*   **Error Handling**: If a job throws, it checks `retryCount`. If retries remain, it recalculates an exponential backoff time and re-enqueues the job into the delayed set. If out of retries, it rejects the promise with a `JobMaxRetriesError`.
 
 ### `RedisClient.ts`
-Registers all our custom Lua scripts using `ioredis.defineCommand`. This guarantees TypeScript type safety for our highly specific Lua arguments.
+Registers all custom Lua scripts using `ioredis.defineCommand`. This guarantees TypeScript type safety for the specific Lua arguments.
 
 ---
 
 ## 4. The Lua Scripts (The Brains)
 
-Redis Lua scripts are **atomic**. While one runs, no other client can interfere. This prevents massive race conditions when 10 workers try to grab jobs at the exact same millisecond. 
+Redis Lua scripts are **atomic**. While one runs, no other client can interfere. This prevents race conditions when 10 workers try to grab jobs at the exact same millisecond.
 
 #### `enqueue.lua`
-1. Uses `TIME` to get the server time.
-2. `ZADD`s the job payload to `bq:{id}:jobs`.
-3. Refreshes the `EXPIRE` TTLs on the queue so it stays alive.
-4. `LPUSH`es the queue ID to `bq:workers:notify` to wake up a sleeping worker.
+1. Uses `TIME` to get the server time (immune to client clock skew).
+2. If the job is not due yet → `ZADD`s it to `bq:{id}:delayed` scored by its due time, and parks the queue in `bq:global:wakeup`.
+3. Otherwise → `ZADD`s it to `bq:{id}:jobs` with score `priority × 1e12 + seq`. The `seq` counter lives in the meta hash and makes the score exact, so priority always wins and arrival order breaks ties.
+4. Refreshes the `EXPIRE` TTLs on the queue so it stays alive.
+5. `LPUSH`es the queue ID onto the **owning pool's** channel (`bq:workers:notify:<ownerId>`) so exactly the process holding the closure is woken up.
 
 #### `dequeue.lua` (The Gatekeeper)
-This script is called by a worker when it wakes up. It decides if a job is *allowed* to run.
-1. **Concurrency Check**: `SCARD running` -> Is it >= `maxConcurrent`? If yes, return 'concurrent_full'.
-2. **MinTime Check**: `GET lastRun` -> Is `now - lastRun < minTime`? If yes, return 'rate_limited'.
-3. **Reservoir Check**: Are there tokens left? If 0, return 'empty_reservoir'.
-4. **Execution**: If all checks pass:
-   * `ZREM` the job from the pending ZSET.
-   * `SADD` the job to the `running` SET.
-   * `HSET` the job into the `inflight` HASH (for crash recovery).
-   * Update the `lastRun` timestamp.
-   * Return the job payload to the worker.
+Called by a worker when it wakes up. It decides if a job is *allowed* to run.
+1. **Promotes due jobs**: moves any `delayed` job whose due time has passed into the ready set, atomically.
+2. **Reservoir maintenance**: lazily applies a refresh (reset) or an increase (add) if the interval has elapsed — no timer required.
+3. **Concurrency Check**: `SCARD running` → is it ≥ `maxConcurrent`? If yes, return `concurrent_full`.
+4. **MinTime Check**: `GET lastRun` → is `now - lastRun < minTime`? If yes, return `rate_limited` with the exact time the next job may run.
+5. **Reservoir Check**: are there tokens left? If 0, return `rate_limited` with the next token time.
+6. **Ownership**: scans the ready set for the first job **owned by this pool**. A job's function is a JS closure and only the scheduling process can run it.
+7. **Execution**: if all checks pass — `ZREM` the job, `SADD` it to `running`, `HSET` it into `inflight`, update `lastRun`, and return the payload.
 
 #### `complete.lua` (The Cleanup Crew)
-Called when a worker finishes a job (successfully or by throwing/timing out).
+Called when a worker finishes a job.
 1. `SREM` the job from the `running` SET.
 2. `HDEL` the job from the `inflight` HASH.
-3. Check if the queue is now completely empty (`ZCARD jobs == 0` AND `SCARD running == 0`).
-   * **If Empty**: Immediately `DEL` the jobs ZSET, running SET, inflight HASH, and lastRun STRING. This instantly frees Redis memory for idle guilds. The `meta` key is kept alive but given a 1-hour TTL.
-   * **If Not Empty**: `LPUSH` back to the notify queue to wake a worker for the next job, and refresh the TTL on all active keys to 1 hour.
+3. If jobs remain → `LPUSH` a notification to the owning pool and refresh the TTLs.
+4. If the queue is completely empty → immediately `DEL` the volatile keys (jobs, delayed, running, inflight, lastRun) and remove the wakeup entry. The `meta` key survives with its TTL so cold-starts stay cheap.
 
 #### `wakeup_check.lua`
 Called by the global ticker every 50ms.
-1. `ZRANGEBYSCORE wakeup -inf <current_time>` -> gets queues that were previously rate-limited but are now eligible to run again.
-2. `ZREMRANGEBYSCORE` to remove them from the sleeping list.
-3. `LPUSH`es them into the `notify` list so workers can process them.
+1. `ZRANGEBYSCORE wakeup -inf <now>` → queues that were rate-limited but are now eligible.
+2. Removes exactly the entries it processed (so entries beyond the batch size are not lost).
+3. `LPUSH`es them onto the owning pool's channel.
 
 #### `recover.lua`
-Called only once when the bot starts up.
-1. Looks for any queue ID pattern in Redis.
-2. Checks the `inflight` HASHes. If a job has been sitting in `inflight` longer than `visibilityTimeoutMs` (e.g., 1 hour), it assumes the previous Node.js process crashed mid-execution.
-3. Takes the orphaned job, removes it from the `running` SET, and pushes it back into the pending `jobs` ZSET so a worker can retry it.
+Called once per queue when a limiter is first used.
+1. Scans the `inflight` HASH for jobs older than `visibilityTimeoutMs` — these were orphaned by a crash.
+2. Removes them from `running` and re-queues them in the ready set with an incremented retry counter (if the retry budget allows).
+3. Notifies the owning pool.
+
+#### `stats.lua`
+Atomic stats snapshot (`queueSize`, `runningCount`, `reservoir`). It also performs the same lazy reservoir maintenance as `dequeue.lua`, so the reported token count is accurate even when the queue is idle.
+
+#### `pool_heartbeat.lua` / `pool_unregister.lua`
+Register/refresh a pool in the `bq:pools` registry (dropping pools that stopped heartbeating), and deregister + delete the pool's channel on graceful shutdown.
 
 ---
 
-## 5. Day in the Life of a Rate-Limited Job 
+## 5. Day in the Life of a Rate-Limited Job
 
 **Scenario:** Guild 123 has `maxConcurrent: 1`, `minTime: 1000`. Two members join at the exact same time.
 
 **T=0ms (Member 1 & 2 Join)**
 * Your bot calls `.schedule()` twice.
-* `enqueue.lua` runs twice. Both jobs are parked in the `bq:vcrole:123:jobs` ZSET.
-* Two notifications are sent to `bq:workers:notify`.
+* `enqueue.lua` runs twice. Both jobs are parked in the `bq:guild:123:jobs` ZSET with priority-scored values.
+* Two notifications are pushed to this pool's channel `bq:workers:notify:<poolId>`.
 
 **T=5ms (Worker A Wakes Up)**
-* Worker A pops "vcrole:123" from the notify list.
+* Worker A pops "guild:123" from its channel.
 * Runs `dequeue.lua`. `running` is 0. Job 1 is allowed.
-* Job 1 is moved to the `running` SET.
-* Node.js starts executing Job 1's function (adding the role via Discord HTTP).
+* Job 1 is moved to the `running` SET and `inflight` HASH.
+* Node.js starts executing Job 1's function.
 
 **T=10ms (Worker B Wakes Up)**
-* Worker B pops the second "vcrole:123" notification.
-* Runs `dequeue.lua`. `running` is 1. `maxConcurrent` is 1!
-* **Denied.** Script returns `'concurrent_full'`. 
-* Worker B gives up and goes back to sleep. Job 2 stays in the Redis ZSET.
+* Worker B pops the second "guild:123" notification.
+* Runs `dequeue.lua`. `running` is 1. `maxConcurrent` is 1.
+* **Denied.** The script returns `concurrent_full`.
+* Worker B goes back to sleep. Job 2 stays in the Redis ZSET.
 
 **T=150ms (Job 1 Completes)**
 * Discord responds. Job 1 is done.
-* `complete.lua` runs. Removes Job 1 from `running` SET.
-* Script checks: Are there more jobs? Yes, Job 2 is still waiting.
-* Script pushes a new notification to `bq:workers:notify`.
+* `complete.lua` runs. Removes Job 1 from the `running` SET.
+* Jobs remain → a new notification is pushed to the owning pool.
 
-**T=155ms (Worker A or B Wakes Up)**
-* Pops "vcrole:123". Runs `dequeue.lua`.
-* Concurrency is now 0 (Job 1 finished). 
-* **BUT**, `lastRun` was T=5ms. `minTime` is 1000ms. 
-* T=155ms - 5ms = 150ms. 150ms < 1000ms.
-* **Denied.** Script returns `'rate_limited'`. Returns the exact time Job 2 *should* run: T=1005ms.
+**T=155ms (Worker Wakes Up)**
+* Runs `dequeue.lua`. Concurrency is now 0 (Job 1 finished).
+* **BUT**, `lastRun` was T=5ms and `minTime` is 1000ms. 150ms < 1000ms.
+* **Denied.** The script returns `rate_limited` and the exact time Job 2 *should* run: T=1005ms.
 
 **T=160ms (Worker parks the queue)**
-* Worker receives the 'rate_limited' signal and the projected execution time.
-* It calls `WorkerPool.scheduleWakeup(queueId, 1005)`.
-* `zadd bq:global:wakeup 1005 vcrole:123`.
+* The worker schedules a wakeup: `zadd bq:global:wakeup 1005 <poolId>|guild:123`.
 
 **T=1000ms (The Ticker)**
-* The 50ms ticker checks `bq:global:wakeup`.
-* 1000 >= 1005? No. Nothing happens.
+* The 50ms ticker checks `bq:global:wakeup`. 1000 >= 1005? No. Nothing happens.
 
 **T=1050ms (The Ticker)**
 * Ticker checks. 1050 >= 1005? Yes!
-* `wakeup_check.lua` pulls "vcrole:123" out and pushes it to `bq:workers:notify`.
+* `wakeup_check.lua` pulls the entry out and pushes "guild:123" onto the owning pool's channel.
 
 **T=1055ms (Worker Wakes Up)**
-* Pops "vcrole:123". Runs `dequeue.lua`.
-* Concurrency is 0. Time since `lastRun` is 1050ms (which is > 1000ms).
+* Runs `dequeue.lua`. Concurrency is 0. Time since `lastRun` is > 1000ms.
 * **Allowed.** Job 2 executes.
 
 **T=1200ms (Job 2 Completes)**
-* `complete.lua` runs.
-* Checks: Are there more jobs? No. Is anything running? No.
-* The queue is empty.
-* **Immediate Cleanup**: The volatile running, inflight, and jobs keys are instantly deleted. The meta config key is given a 1 hour TTL and left alone safely.
+* `complete.lua` runs. No more jobs. Nothing running. The queue is empty.
+* **Immediate Cleanup**: the volatile running, inflight, jobs and delayed keys are instantly deleted. The meta config key keeps its TTL and is left alone safely.

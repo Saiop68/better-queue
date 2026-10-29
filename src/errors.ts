@@ -13,7 +13,10 @@ export class JobMaxRetriesError extends BetterQueueError {
     public readonly attempts: number,
     public override readonly cause: unknown,
   ) {
-    super(`Job ${jobId} failed after ${attempts} attempt(s).`);
+    // Include the original error's message so that `rejects.toThrow('boom')`
+    // still matches the underlying failure, not just the retry bookkeeping.
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`Job ${jobId} failed after ${attempts} attempt(s): ${detail}`);
     this.name = 'JobMaxRetriesError';
   }
 }

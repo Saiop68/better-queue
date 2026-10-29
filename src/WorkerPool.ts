@@ -1,8 +1,9 @@
 import type Redis from 'ioredis';
 import type { RedisOptions } from 'ioredis';
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { createRedisClient, createBlockingClient } from './RedisClient';
-import { KEYS, DEFAULT_WORKER_COUNT, DEFAULT_TICK_INTERVAL_MS, DEFAULT_VISIBILITY_TIMEOUT_MS, BRPOP_TIMEOUT_SECONDS, MAX_DRAIN_PER_NOTIFY, WAKEUP_BATCH_SIZE } from './constants';
+import { KEYS, DEFAULT_WORKER_COUNT, DEFAULT_TICK_INTERVAL_MS, DEFAULT_VISIBILITY_TIMEOUT_MS, BRPOP_TIMEOUT_SECONDS, MAX_DRAIN_PER_NOTIFY, WAKEUP_BATCH_SIZE, POOL_LIVE_WINDOW_MS } from './constants';
 import { WorkerPoolNotInitializedError, JobMaxRetriesError, OrphanedJobError } from './errors';
 import type { WorkerPoolOptions, PendingJob, JobPayload, DequeueResult } from './types';
 
@@ -10,6 +11,11 @@ import type { WorkerPoolOptions, PendingJob, JobPayload, DequeueResult } from '.
 const DEFAULT_PENDING_JOB_TIMEOUT_MS = 300_000; // 5 minutes
 /** How often the orphan sweeper runs. */
 const SWEEPER_INTERVAL_MS = 30_000; // 30 seconds
+/**
+ * How many entries of the ready ZSET a dequeue call may inspect while looking
+ * for a job owned by this pool. Bounds the cost of the owner-aware scan.
+ */
+const DEQUEUE_SCAN_WINDOW = 256;
 
 // ── Singleton guard ────────────────────────────────────────────────────────
 let globalPool: WorkerPool | null = null;
@@ -55,9 +61,11 @@ class Worker {
   private async loop(): Promise<void> {
     while (this.running) {
       try {
-        // BRPOP blocks until a queue ID arrives or times out (1s)
+        // BRPOP blocks until a queue ID arrives or times out (1s).
+        // Each pool has its OWN channel so that another process can never
+        // consume this pool's notification.
         const result = await this.blockingConn.brpop(
-          KEYS.notify,
+          KEYS.notifyPool(this.pool.poolId),
           BRPOP_TIMEOUT_SECONDS,
         );
 
@@ -90,12 +98,22 @@ class Worker {
         continue; // immediately try next job in same queue
       }
 
-      if (status === 'rate_limited' && nextEligibleMs > 0) {
+      // `rate_limited` → minTime / reservoir says when the next job may start.
+      // `empty`        → a job exists but is not due yet (scheduleAt / backoff);
+      //                   nextEligibleMs is when it becomes eligible.
+      // `blocked`      → the queue holds jobs owned by other processes; look
+      //                   again shortly.
+      // All three need a wakeup, otherwise the job would sit in Redis forever.
+      if (
+        (status === 'rate_limited' || status === 'empty' || status === 'blocked') &&
+        nextEligibleMs > 0
+      ) {
         // Schedule a wakeup — the ticker will re-notify workers at the right time
         await this.scheduleWakeup(queueId, nextEligibleMs);
       }
 
-      // For all non-ok statuses (empty, concurrent_full, rate_limited), stop draining
+      // For all non-ok statuses (empty, blocked, concurrent_full, rate_limited),
+      // stop draining
       break;
     }
   }
@@ -104,13 +122,18 @@ class Worker {
     try {
       const raw = await this.pool.commandClient.bqDequeue(
         KEYS.jobs(queueId),
+        KEYS.delayed(queueId),
         KEYS.running(queueId),
         KEYS.inflight(queueId),
         KEYS.meta(queueId),
         KEYS.reservoir(queueId),
         KEYS.lastRun(queueId),
         KEYS.lastRefresh(queueId),
+        KEYS.lastIncrease(queueId),
         String(Date.now()),
+        String(this.pool.defaultTtl),
+        this.pool.poolId,
+        String(DEQUEUE_SCAN_WINDOW),
       );
       return parseDequeueResult(raw);
     } catch (err) {
@@ -131,13 +154,16 @@ class Worker {
     const pending = this.pool.pendingJobs.get(job.id);
 
     if (!pending) {
-      // Job fn not found — likely from a previous process instance (crash recovery).
-      // Just clean up the Redis state.
+      // The job's closure is not in this process.
+      //
+      // With owner-aware dequeue this is only reachable for a job whose owner
+      // is gone (the owning process crashed): the closure can never be
+      // recovered, so the job is an orphan — clean up its Redis state.
       await this.completeJob(queueId, job.id);
       return;
     }
 
-    this.pool.emit('executing', job.id);
+    this.pool.dispatchExecuting(queueId, job.id);
 
     try {
       const value = await pending.fn();
@@ -145,12 +171,16 @@ class Worker {
       this.pool.pendingJobs.delete(job.id);
       await this.completeJob(queueId, job.id);
       pending.resolve(value);
-      this.pool.emit('done', job.id);
+      this.pool.dispatchDone(queueId, job.id);
     } catch (err: unknown) {
       await this.handleJobError(queueId, job, pending, err);
     }
   }
 
+  /**
+   * Handle a failed job: retry with exponential backoff, or reject the
+   * caller's promise once the retry budget is exhausted.
+   */
   private async handleJobError(
     queueId: string,
     job: JobPayload,
@@ -162,28 +192,34 @@ class Worker {
     if (job.retryCount < job.maxRetries) {
       // Exponential backoff: 1s, 2s, 4s, 8s… capped at 30s
       const delayMs = Math.min(1_000 * 2 ** job.retryCount, 30_000);
-      const scheduleAt = Date.now() + delayMs;
       const retryPayload: JobPayload = { ...job, retryCount: attempt };
 
-      this.pool.emit('retry', job.id, attempt);
+      this.pool.dispatchRetry(queueId, job.id, attempt);
 
-      // Keep fn + callbacks in map — they'll be used on retry
+      // Keep fn + callbacks in map — they'll be used on retry.
+      // The retry is re-enqueued with a *relative* delay so the Redis server
+      // clock (not the client clock) decides when it becomes due.
       try {
         await this.pool.commandClient.bqEnqueue(
           KEYS.jobs(queueId),
+          KEYS.delayed(queueId),
           KEYS.meta(queueId),
-          KEYS.notify,
+          KEYS.wakeup,
+          KEYS.pools,
           JSON.stringify(retryPayload),
-          String(scheduleAt),
+          '0',       // scheduleAt — absolute, not used for retries
+          String(delayMs),
+          String(job.priority),
           String(this.pool.defaultTtl),
           queueId,
+          String(POOL_LIVE_WINDOW_MS),
         );
       } catch {
         // If re-enqueue fails, fall through to failure handling
         this.pool.pendingJobs.delete(job.id);
         const retryErr = new JobMaxRetriesError(job.id, attempt, err);
         pending.reject(retryErr);
-        this.pool.emit('failed', job.id, retryErr);
+        this.pool.dispatchFailed(queueId, job.id, retryErr);
         return;
       }
 
@@ -194,7 +230,7 @@ class Worker {
       await this.completeJob(queueId, job.id);
       const finalErr = new JobMaxRetriesError(job.id, attempt, err);
       pending.reject(finalErr);
-      this.pool.emit('failed', job.id, finalErr);
+      this.pool.dispatchFailed(queueId, job.id, finalErr);
     }
   }
 
@@ -204,12 +240,15 @@ class Worker {
         KEYS.running(queueId),
         KEYS.inflight(queueId),
         KEYS.jobs(queueId),
-        KEYS.notify,
-        KEYS.meta(queueId),     // NEW: for TTL refresh + idle cleanup signal
-        KEYS.lastRun(queueId),  // NEW: deleted immediately when queue goes idle
+        KEYS.meta(queueId),        // for TTL refresh + idle cleanup signal
+        KEYS.lastRun(queueId),     // deleted immediately when queue goes idle
+        KEYS.delayed(queueId),
+        KEYS.wakeup,
+        KEYS.pools,
         jobId,
         queueId,
         String(this.pool.defaultTtl),
+        this.pool.poolId,
       );
     } catch {
       // Best-effort — not fatal
@@ -219,8 +258,12 @@ class Worker {
   private async scheduleWakeup(queueId: string, atMs: number): Promise<void> {
     try {
       // ZADD bq:global:wakeup <atMs> <queueId>
-      // NX = only add if not already scheduled (don't push wakeup back further)
-      await this.pool.commandClient.zadd(KEYS.wakeup, 'NX', atMs, queueId);
+      // Keep the EARLIEST wakeup: if one is already scheduled for a later
+      // time, pull it in; if one is scheduled sooner, leave it alone.
+      const existing = await this.pool.commandClient.zscore(KEYS.wakeup, queueId);
+      if (existing === null || Number(existing) > atMs) {
+        await this.pool.commandClient.zadd(KEYS.wakeup, atMs, queueId);
+      }
     } catch {
       // Best-effort
     }
@@ -236,8 +279,8 @@ class Worker {
  * execute them. There is ONE worker pool per Node.js process.
  *
  * Workers use BRPOP to block-wait for notifications. A single global ticker
- * handles deferred wakeups (for minTime / reservoir rate limiting), replacing
- * the need for any per-limiter timers.
+ * handles deferred wakeups (for minTime / reservoir / scheduleAt rate
+ * limiting), replacing the need for any per-limiter timers.
  */
 export class WorkerPool extends EventEmitter {
   /** Shared command connection (non-blocking) */
@@ -250,7 +293,35 @@ export class WorkerPool extends EventEmitter {
    */
   readonly pendingJobs = new Map<string, PendingJob>();
 
+  /**
+   * Per-queue event subscribers.
+   *
+   * A `DistributedLimiter` subscribes to the pool's job events for its own
+   * queue id. Keeping them in a map (instead of adding a listener per
+   * limiter to this shared emitter) means the emitter's listener count stays
+   * constant no matter how many limiters exist.
+   */
+  private readonly queueSubscribers = new Map<
+    string,
+    {
+      executing: Set<(jobId: string) => void>;
+      done: Set<(jobId: string) => void>;
+      failed: Set<(jobId: string, error: unknown) => void>;
+      retry: Set<(jobId: string, attempt: number) => void>;
+    }
+  >();
+
   readonly defaultTtl: number;
+
+  /**
+   * Unique id of this WorkerPool instance (one per process).
+   *
+   * Jobs are stamped with the id of the pool that scheduled them. Because a
+   * job's executable function is a JS closure living in the scheduling
+   * process, only that process may run it — so the id is what makes
+   * cross-process coordination safe.
+   */
+  readonly poolId: string;
 
   private readonly workers: Worker[];
   private readonly redisOptions: RedisOptions;
@@ -270,6 +341,7 @@ export class WorkerPool extends EventEmitter {
     this.pendingJobTimeoutMs      = options.pendingJobTimeoutMs ?? DEFAULT_PENDING_JOB_TIMEOUT_MS;
     this.defaultTtl               = 86_400;
     this.redisOptions             = options.redis;
+    this.poolId                   = `${process.pid}-${randomUUID().slice(0, 8)}`;
 
     this.commandClient = createRedisClient(options.redis);
 
@@ -301,10 +373,92 @@ export class WorkerPool extends EventEmitter {
     return globalPool;
   }
 
+  /**
+   * Subscribe to job events for a single queue id.
+   *
+   * Returns an unsubscribe function.
+   */
+  subscribeQueue(
+    queueId: string,
+    handlers: {
+      executing?: (jobId: string) => void;
+      done?: (jobId: string) => void;
+      failed?: (jobId: string, error: unknown) => void;
+      retry?: (jobId: string, attempt: number) => void;
+    },
+  ): () => void {
+    let entry = this.queueSubscribers.get(queueId);
+    if (!entry) {
+      entry = { executing: new Set(), done: new Set(), failed: new Set(), retry: new Set() };
+      this.queueSubscribers.set(queueId, entry);
+    }
+    if (handlers.executing) entry.executing.add(handlers.executing);
+    if (handlers.done) entry.done.add(handlers.done);
+    if (handlers.failed) entry.failed.add(handlers.failed);
+    if (handlers.retry) entry.retry.add(handlers.retry);
+
+    return (): void => {
+      const current = this.queueSubscribers.get(queueId);
+      if (!current) return;
+      if (handlers.executing) current.executing.delete(handlers.executing);
+      if (handlers.done) current.done.delete(handlers.done);
+      if (handlers.failed) current.failed.delete(handlers.failed);
+      if (handlers.retry) current.retry.delete(handlers.retry);
+      if (
+        current.executing.size === 0 &&
+        current.done.size === 0 &&
+        current.failed.size === 0 &&
+        current.retry.size === 0
+      ) {
+        this.queueSubscribers.delete(queueId);
+      }
+    };
+  }
+
+  /** Notify the subscribers of a queue that a job started executing. */
+  dispatchExecuting(queueId: string, jobId: string): void {
+    const entry = this.queueSubscribers.get(queueId);
+    if (!entry) return;
+    for (const fn of entry.executing) {
+      try { fn(jobId); } catch { /* a bad listener must not break the worker */ }
+    }
+  }
+
+  /** Notify the subscribers of a queue that a job completed. */
+  dispatchDone(queueId: string, jobId: string): void {
+    const entry = this.queueSubscribers.get(queueId);
+    if (!entry) return;
+    for (const fn of entry.done) {
+      try { fn(jobId); } catch { /* ignore */ }
+    }
+  }
+
+  /** Notify the subscribers of a queue that a job failed. */
+  dispatchFailed(queueId: string, jobId: string, error: unknown): void {
+    const entry = this.queueSubscribers.get(queueId);
+    if (!entry) return;
+    for (const fn of entry.failed) {
+      try { fn(jobId, error); } catch { /* ignore */ }
+    }
+  }
+
+  /** Notify the subscribers of a queue that a job is being retried. */
+  dispatchRetry(queueId: string, jobId: string, attempt: number): void {
+    const entry = this.queueSubscribers.get(queueId);
+    if (!entry) return;
+    for (const fn of entry.retry) {
+      try { fn(jobId, attempt); } catch { /* ignore */ }
+    }
+  }
+
   private async start(): Promise<void> {
     for (const worker of this.workers) {
       worker.start();
     }
+
+    // Register in the live-pool registry immediately so other processes can
+    // notify us from the very first job.
+    await this.heartbeat();
 
     this.startTicker();
     if (this.pendingJobTimeoutMs > 0) this.startSweeper();
@@ -345,6 +499,19 @@ export class WorkerPool extends EventEmitter {
     // Stop all workers
     await Promise.all(this.workers.map((w) => w.stop()));
 
+    // Remove this pool from the live registry and drop its notification
+    // channel, so other processes stop notifying it immediately instead of
+    // waiting for the liveness window to expire.
+    try {
+      await this.commandClient.bqPoolUnregister(
+        KEYS.pools,
+        KEYS.notifyPool(this.poolId),
+        this.poolId,
+      );
+    } catch {
+      /* best-effort */
+    }
+
     // Close command connection
     await this.commandClient.quit();
 
@@ -361,11 +528,13 @@ export class WorkerPool extends EventEmitter {
         KEYS.inflight(queueId),
         KEYS.running(queueId),
         KEYS.jobs(queueId),
-        KEYS.notify,
+        KEYS.meta(queueId),
+        KEYS.wakeup,
         String(Date.now()),
         String(this.visibilityTimeoutMs),
         queueId,
         String(ttl),
+        this.poolId,
       );
     } catch {
       return 0;
@@ -378,23 +547,42 @@ export class WorkerPool extends EventEmitter {
      * It fires every `tickIntervalMs` and drains the wakeup ZSET,
      * re-notifying workers for any queues that are now eligible.
      * This replaces ALL per-limiter timers — the key memory optimization.
+     *
+     * The same tick refreshes this pool's liveness heartbeat, which other
+     * processes use to decide whether to notify us.
      */
     const tick = (): void => {
       void this.commandClient
         .bqWakeupCheck(
           KEYS.wakeup,
-          KEYS.notify,
+          KEYS.pools,
           String(Date.now()),
           String(WAKEUP_BATCH_SIZE),
+          String(POOL_LIVE_WINDOW_MS),
         )
         .catch(() => {
           /* best-effort, will retry next tick */
         });
+
+      void this.heartbeat();
     };
 
     this.tickerHandle = setInterval(tick, this.tickIntervalMs);
     // unref() allows Node.js to exit if this is the only remaining handle
     this.tickerHandle.unref();
+  }
+
+  /** Refresh this pool's liveness heartbeat in Redis. */
+  private async heartbeat(): Promise<void> {
+    try {
+      await this.commandClient.bqPoolHeartbeat(
+        KEYS.pools,
+        this.poolId,
+        String(POOL_LIVE_WINDOW_MS),
+      );
+    } catch {
+      /* best-effort */
+    }
   }
 
   /**
@@ -410,7 +598,7 @@ export class WorkerPool extends EventEmitter {
         if (pending.enqueuedAt < cutoff) {
           this.pendingJobs.delete(jobId);
           pending.reject(new OrphanedJobError(jobId));
-          this.emit('failed', jobId, new OrphanedJobError(jobId));
+          this.dispatchFailed(pending.queueId, jobId, new OrphanedJobError(jobId));
         }
       }
     };

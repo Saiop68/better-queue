@@ -10,7 +10,13 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
-    }
+    },
+    "./LimiterManager": {
+      "types": "./dist/LimiterManager.d.ts",
+      "import": "./dist/LimiterManager.mjs",
+      "require": "./dist/LimiterManager.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -18,14 +24,14 @@
   ],
   "scripts": {
     "build:lua": "node build-lua.js",
-    "build": "npm run build:lua && tsup src/index.ts --format cjs,esm --dts --clean --sourcemap",
-    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "build": "npm run build:lua && tsup src/index.ts src/LimiterManager.ts --format cjs,esm --dts --clean --sourcemap",
+    "dev": "tsup src/index.ts src/LimiterManager.ts --format cjs,esm --dts --watch",
     "typecheck": "tsc --noEmit",
     "example:basic": "ts-node -r tsconfig-paths/register examples/basic.ts",
-    "example:discord": "ts-node -r tsconfig-paths/register examples/discord-bot.ts",
     "example:benchmark": "ts-node -r tsconfig-paths/register examples/benchmark.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "prepublishOnly": "npm run build",
     "prepare": "npm run build"
   },
   "keywords": [
@@ -35,18 +41,17 @@
     "bottleneck",
     "distributed",
     "memory-efficient",
-    "discord",
     "typescript"
   ],
-  "author": "",
+  "author": "Saiop68",
   "license": "MIT",
   "dependencies": {
-    "discord.js": "^14.26.2",
     "ioredis": "^5.3.2",
     "lru-cache": "^11.3.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.5",
+    "discord.js": "^14.26.2",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
     "tsup": "^8.0.2",

@@ -1,17 +1,21 @@
 /**
  * examples/discord-dumper.ts
- * 
+ *
  * Instructions:
  * run: npx ts-node --project tsconfig.dev.json examples/discord-dumper.ts
- * 
- * Once the bot is online, go to your Discord server and type "!spam" 
+ *
+ * NOTE: this example needs `discord.js`, which is a devDependency of this
+ * repo (NOT a runtime dependency of the library):
+ *   npm install discord.js
+ *
+ * Once the bot is online, go to your Discord server and type "!spam"
  * to instantly queue 100 messages across every single channel.
  */
 
 import { Client, GatewayIntentBits, Message } from 'discord.js';
 import { WorkerPool, limiterManager } from '../src';
 
-const BOT_TOKEN = 'MTQ4NzM2OTI0NTk4NDgyMTI1OQ.GG5uRa.Ut2SS9BnbhQ9iPK_DNDFXQekJPw0289T3fuyfM';
+const BOT_TOKEN = process.env['DISCORD_BOT_TOKEN'] ?? '';
 
 // ── 1. Configure the Limiter Rules ────────────────────────────────────────
 
@@ -56,26 +60,27 @@ client.on('messageCreate', async (message: Message) => {
   const channels = await message.guild.channels.fetch();
   let textChannelsCount = 0;
   
-  for (const [_, channel] of channels) {
+  for (const [, channel] of channels) {
     if (!channel || !channel.isTextBased()) continue;
     textChannelsCount++;
-    
+
     // 2. THIS IS THE SECRET SAUCE:
     // We get the limiter using the CHANNEL ID, not the Guild ID.
     // This perfectly isolates the queue to run 1 queue per specific channel.
     const limiter = limiterManager.getLimiter(channel.id, 'channel-spam');
+    const channelName = channel.name;
 
     // 3. Queue 100 messages for this specific channel
     for (let i = 1; i <= 100; i++) {
        const jobId = `spam-${channel.id}-${i}`;
-       
+
        limiter.schedule({ id: jobId }, async () => {
-         const timestamp = new Date().toISOString().split('T')[1].slice(0, 8); // hh:mm:ss
+         const timestamp = new Date().toISOString().split('T')[1]?.slice(0, 8) ?? '00:00:00'; // hh:mm:ss
          try {
-           console.log(`[${timestamp}] 🚀 [${channel.name}] Firing Job #${i}...`);
-           await channel.send(`Load Test - Channel: \`${channel.name}\` | Message: **#${i}**`);
+           console.log(`[${timestamp}] 🚀 [${channelName}] Firing Job #${i}...`);
+           await channel.send(`Load Test - Channel: \`${channelName}\` | Message: **#${i}**`);
          } catch (err) {
-           console.error(`❌ [${channel.name}] Job #${i} failed:`, (err as Error).message);
+           console.error(`❌ [${channelName}] Job #${i} failed:`, (err as Error).message);
          }
        }).catch(() => { /* handle limiter/queue ignores silently */});
     }

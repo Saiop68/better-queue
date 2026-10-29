@@ -35,6 +35,17 @@ export interface FeatureConfig {
   reservoirRefreshAmount?: number;
   /** How often the reservoir refills (ms). 0 = disabled. */
   reservoirRefreshInterval?: number;
+  /**
+   * How often the reservoir is INCREMENTED (ms). 0 = disabled.
+   *
+   * Unlike `reservoirRefreshAmount` (which resets the bucket to a fixed
+   * value), this ADDS `reservoirIncreaseAmount` tokens on every interval.
+   */
+  reservoirIncreaseInterval?: number;
+  /** Tokens ADDED to the reservoir on each increase interval. */
+  reservoirIncreaseAmount?: number;
+  /** Maximum value the reservoir may reach when increasing. 0 = unbounded. */
+  reservoirIncreaseMaximum?: number;
   /** Minimum delay between job starts (ms). 0 = no minimum. */
   minTime?: number;
   /**
@@ -79,6 +90,9 @@ const DEFAULT_CONFIG = Object.freeze<Required<Omit<FeatureConfig, 'trackDoneStat
   reservoir:                -1,   // -1 = unlimited (no token bucket)
   reservoirRefreshAmount:   10,
   reservoirRefreshInterval: 1_000,
+  reservoirIncreaseInterval: 0,  // 0 = disabled (token-bucket "add" mode)
+  reservoirIncreaseAmount:  0,
+  reservoirIncreaseMaximum: 0,   // 0 = unbounded
   minTime:                  0,
   timeout:                  30_000,
   ttl:                      600,     // 10 minutes — idle queues auto-expire in Redis
@@ -283,6 +297,9 @@ export class LimiterManager {
       reservoir:                reservoirValue,
       reservoirRefreshAmount:   cfg.reservoirRefreshAmount    ?? DEFAULT_CONFIG.reservoirRefreshAmount,
       reservoirRefreshInterval: cfg.reservoirRefreshInterval  ?? DEFAULT_CONFIG.reservoirRefreshInterval,
+      reservoirIncreaseInterval: cfg.reservoirIncreaseInterval ?? DEFAULT_CONFIG.reservoirIncreaseInterval,
+      reservoirIncreaseAmount:  cfg.reservoirIncreaseAmount   ?? DEFAULT_CONFIG.reservoirIncreaseAmount,
+      reservoirIncreaseMaximum: cfg.reservoirIncreaseMaximum  ?? DEFAULT_CONFIG.reservoirIncreaseMaximum,
       ttl:                      cfg.ttl                       ?? DEFAULT_CONFIG.ttl,
       maxRetries:               cfg.maxRetries                ?? DEFAULT_CONFIG.maxRetries,
       retryOnFailure:           (cfg.maxRetries ?? DEFAULT_CONFIG.maxRetries) > 0,

@@ -130,9 +130,9 @@ class MemProfiler {
     console.log('\n📌  PEAK heap (sampled every 200 ms): ' + mb(this.peakHeap));
 
     // Delta between first and last snapshot
-    if (this.snapshots.length >= 2) {
-      const first = this.snapshots[0];
-      const last  = this.snapshots[this.snapshots.length - 1];
+    const first = this.snapshots[0];
+    const last  = this.snapshots[this.snapshots.length - 1];
+    if (first !== undefined && last !== undefined) {
       const deltaRss  = last.rss      - first.rss;
       const deltaHeap = last.heapUsed - first.heapUsed;
       console.log('📌  Net RSS  growth (start → end): ' + (deltaRss  >= 0 ? '+' : '') + mb(deltaRss));

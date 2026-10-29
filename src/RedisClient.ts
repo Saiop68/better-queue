@@ -6,93 +6,135 @@ declare module 'ioredis' {
   interface Redis {
     bqEnqueue(
       jobsKey: string,
+      delayedKey: string,
       metaKey: string,
-      notifyKey: string,
+      wakeupKey: string,
+      poolsKey: string,
       payload: string,
-      score: string,
+      scheduleAt: string,
+      delayMs: string,
+      priority: string,
       ttl: string,
       queueId: string,
+      liveWindowMs: string,
     ): Promise<string>;
 
     bqDequeue(
       jobsKey: string,
+      delayedKey: string,
       runningKey: string,
       inflightKey: string,
       metaKey: string,
       reservoirKey: string,
       lastRunKey: string,
       lastRefreshKey: string,
+      lastIncreaseKey: string,
       now: string,
+      ttl: string,
+      ownerId: string,
+      scanWindow: string,
     ): Promise<[string, string, string]>;
 
     bqComplete(
       runningKey: string,
       inflightKey: string,
       jobsKey: string,
-      notifyKey: string,
       metaKey: string,
       lastRunKey: string,
+      delayedKey: string,
+      wakeupKey: string,
+      poolsKey: string,
       jobId: string,
       queueId: string,
       ttl: string,
+      ownerPoolId: string,
     ): Promise<number>;
 
     bqWakeupCheck(
       wakeupKey: string,
-      notifyKey: string,
+      poolsKey: string,
       now: string,
       batchSize: string,
+      liveWindowMs: string,
     ): Promise<number>;
 
     bqRecover(
       inflightKey: string,
       runningKey: string,
       jobsKey: string,
-      notifyKey: string,
+      metaKey: string,
+      wakeupKey: string,
       now: string,
       visibilityTimeout: string,
       queueId: string,
       ttl: string,
+      ownerPoolId: string,
     ): Promise<number>;
 
     bqStats(
       jobsKey: string,
       runningKey: string,
       reservoirKey: string,
+      delayedKey: string,
+      metaKey: string,
+      lastRefreshKey: string,
+      lastIncreaseKey: string,
     ): Promise<[string, string, string]>;
+
+    bqPoolHeartbeat(
+      poolsKey: string,
+      poolId: string,
+      liveWindowMs: string,
+    ): Promise<string>;
+
+    bqPoolUnregister(
+      poolsKey: string,
+      notifyPoolKey: string,
+      poolId: string,
+    ): Promise<number>;
   }
 }
 
 /** Register all custom Lua commands on a Redis instance. */
 function registerCommands(redis: Redis): void {
   redis.defineCommand('bqEnqueue', {
-    numberOfKeys: 3,
+    numberOfKeys: 5, // jobs, delayed, meta, wakeup, pools
     lua: LUA.enqueue,
   });
 
   redis.defineCommand('bqDequeue', {
-    numberOfKeys: 7,
+    numberOfKeys: 9, // jobs, delayed, running, inflight, meta, reservoir, lastRun, lastRefresh, lastIncrease
     lua: LUA.dequeue,
   });
 
   redis.defineCommand('bqComplete', {
-    numberOfKeys: 6,  // running, inflight, jobs, notify, meta, lastRun
+    numberOfKeys: 8, // running, inflight, jobs, meta, lastRun, delayed, wakeup, pools
     lua: LUA.complete,
   });
 
   redis.defineCommand('bqWakeupCheck', {
-    numberOfKeys: 2,
+    numberOfKeys: 2, // wakeup, pools
     lua: LUA.wakeupCheck,
   });
 
   redis.defineCommand('bqRecover', {
-    numberOfKeys: 4,
+    numberOfKeys: 5, // inflight, running, jobs, meta, wakeup
     lua: LUA.recover,
   });
 
   redis.defineCommand('bqStats', {
-    numberOfKeys: 3,
+    numberOfKeys: 7,
     lua: LUA.stats,
+  });
+
+  redis.defineCommand('bqPoolHeartbeat', {
+    numberOfKeys: 1, // pools
+    lua: LUA.poolHeartbeat,
+  });
+
+  redis.defineCommand('bqPoolUnregister', {
+    numberOfKeys: 2, // pools, notifyPool
+    lua: LUA.poolUnregister,
   });
 }
 

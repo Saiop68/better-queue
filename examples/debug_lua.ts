@@ -1,12 +1,22 @@
-// Debug script to test all Lua operations end-to-end
+/**
+ * Debug helper — exercise every Lua script end-to-end.
+ *
+ * Run: npx ts-node --project tsconfig.dev.json examples/debug_lua.ts
+ *
+ * Uses REDIS_HOST / REDIS_PORT (defaults: 127.0.0.1 / 6379).
+ */
 import { createRedisClient } from '../src/RedisClient';
 import { KEYS } from '../src/constants';
+
+const HOST = process.env['REDIS_HOST'] ?? '127.0.0.1';
+const PORT = Number(process.env['REDIS_PORT'] ?? 6379);
 
 process.on('unhandledRejection', (e) => { console.error('UNHANDLED:', e); process.exit(1); });
 
 async function main() {
-  const redis = createRedisClient({ host: '127.0.0.1', port: 6379 });
-  
+  const redis = createRedisClient({ host: HOST, port: PORT });
+  const poolId = 'debug-pool';
+
   try {
     // 1. Connectivity
     const ping = await redis.ping();
@@ -24,6 +34,9 @@ async function main() {
       reservoir: '-1',
       reservoirRefreshInterval: '0',
       reservoirRefreshAmount: '0',
+      reservoirIncreaseInterval: '0',
+      reservoirIncreaseAmount: '0',
+      reservoirIncreaseMaximum: '0',
       ttl: '3600',
     });
     console.log('3. Meta written');
@@ -35,27 +48,30 @@ async function main() {
       maxRetries: 0,
       retryCount: 0,
       enqueuedAt: Date.now(),
+      owner: poolId,
     });
-    const score = await redis.bqEnqueue(
-      KEYS.jobs('dbg'), KEYS.meta('dbg'), KEYS.notify,
-      payload, '0', '3600', 'dbg',
+    const due = await redis.bqEnqueue(
+      KEYS.jobs('dbg'), KEYS.delayed('dbg'), KEYS.meta('dbg'),
+      KEYS.wakeup, KEYS.pools,
+      payload, '0', '0', '5', '3600', 'dbg', '30000',
     );
-    console.log('4. Enqueue score:', score);
+    console.log('4. Enqueue due time:', due);
 
     // 5. Dequeue
     const raw = await redis.bqDequeue(
-      KEYS.jobs('dbg'), KEYS.running('dbg'), KEYS.inflight('dbg'),
-      KEYS.meta('dbg'), KEYS.reservoir('dbg'), KEYS.lastRun('dbg'), KEYS.lastRefresh('dbg'),
-      String(Date.now() + 5_000),
+      KEYS.jobs('dbg'), KEYS.delayed('dbg'), KEYS.running('dbg'), KEYS.inflight('dbg'),
+      KEYS.meta('dbg'), KEYS.reservoir('dbg'), KEYS.lastRun('dbg'),
+      KEYS.lastRefresh('dbg'), KEYS.lastIncrease('dbg'),
+      String(Date.now()), '3600', poolId, '256',
     );
     console.log('5. Dequeue result:', raw);
 
     // 6. Complete
     if (raw[0] === 'ok') {
       const done = await redis.bqComplete(
-        KEYS.running('dbg'), KEYS.inflight('dbg'), KEYS.jobs('dbg'), KEYS.notify,
-        KEYS.meta('dbg'), KEYS.lastRun('dbg'),
-        'job-abc-123', 'dbg', '3600',
+        KEYS.running('dbg'), KEYS.inflight('dbg'), KEYS.jobs('dbg'), KEYS.meta('dbg'),
+        KEYS.lastRun('dbg'), KEYS.delayed('dbg'), KEYS.wakeup, KEYS.pools,
+        'job-abc-123', 'dbg', '3600', poolId,
       );
       console.log('6. Complete result:', done);
     } else {
@@ -65,6 +81,8 @@ async function main() {
     // 7. Stats
     const stats = await redis.bqStats(
       KEYS.jobs('dbg'), KEYS.running('dbg'), KEYS.reservoir('dbg'),
+      KEYS.delayed('dbg'), KEYS.meta('dbg'),
+      KEYS.lastRefresh('dbg'), KEYS.lastIncrease('dbg'),
     );
     console.log('7. Stats:', stats);
 
