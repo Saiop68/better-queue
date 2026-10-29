@@ -111,7 +111,119 @@ Register/refresh a pool in the `bq:pools` registry (dropping pools that stopped 
 
 ---
 
-## 5. Day in the Life of a Rate-Limited Job
+## 5. Known Issues (Open Bugs)
+
+### 5.1 Cross-process jobs can stall when the concurrency slot is held by another process
+
+**Status:** known, open, reproducible. **Not fixed** in the current release.
+
+**Symptom.** When two processes share a queue `id` and the queue's concurrency
+slot is occupied by a job belonging to **another** process, the waiting
+process's job can sit in Redis for a long time — until an unrelated
+notification happens to poke the queue.
+
+**Reproduction** (two Node processes, same queue id, `maxConcurrent: 1`):
+
+1. Process A schedules a job that holds the slot for 2 seconds.
+2. Process B schedules a priority-1 job 900 ms later.
+3. Process A observes its own queue while B's job is pending:
+
+   ```
+   [a] t+2s  pending=1  running=0  wakeup=0
+   [a] t+4s  pending=1  running=0  wakeup=0
+   [a] t+6s  pending=1  running=0  wakeup=0
+   [a] t+8s  pending=1  running=0  wakeup=0
+   [a] t+10s pending=1  running=0  wakeup=0
+   ```
+
+4. B's job does not run. After manually `LPUSH`ing a notification onto the
+   pool's notify channel, it is released immediately:
+
+   ```
+   [a] poked notify channel of 997231-6d414398
+   [a] after poke: pending= 0 running= 0
+   ```
+
+5. B eventually resolves — it is a **stall, not a permanent loss**:
+
+   ```
+   [b] B-prio1 RAN after 10108 ms
+   [b] outcome: RESOLVED
+   ```
+
+**Root cause.** Two places conspire.
+
+`scripts/dequeue.lua` checks concurrency *before* it looks at whether the
+queue has any work this pool could run:
+
+```lua
+if maxConcurrent > 0 then
+  local running = tonumber(redis.call('SCARD', runningKey))
+  if running >= maxConcurrent then
+    return { 'concurrent_full', '', '0' }
+  end
+end
+```
+
+It returns status `concurrent_full` with `nextEligibleMs = '0'` — i.e. "no
+idea when to retry".
+
+`src/WorkerPool.ts` then only schedules a wakeup for three of the five
+dequeue statuses:
+
+```ts
+if (
+  (status === 'rate_limited' || status === 'empty' || status === 'blocked') &&
+  nextEligibleMs > 0
+) {
+  await this.scheduleWakeup(queueId, nextEligibleMs);
+}
+```
+
+`concurrent_full` is not in that list, and its `nextEligibleMs` is `0`
+anyway. So no wakeup is ever scheduled for this queue, and the job sits in
+the ready ZSET until some *other* event pushes a notification onto the
+pool's channel.
+
+The `blocked` status — which does carry a retry time (`now + 50`) and would
+have scheduled a wakeup — is only reached **after** the `concurrent_full`
+early-return, so it never fires for this case.
+
+**Impact.** Jobs in the affected queue wait indefinitely instead of for a
+bounded time. In the reproduction, a job that should have started as soon as
+the slot freed (t≈2 s) started at t≈10 s, when an unrelated notification
+arrived.
+
+**Workaround until fixed:**
+
+- Prefer **one process per queue id** — the bug only appears when the
+  concurrency slot is held by a different process.
+- Or use a large enough `maxConcurrent` that a slot is essentially always
+  available, and rely on `minTime` plus the reservoir for pacing (those
+  paths *do* schedule wakeups correctly).
+- Or monitor `getQueueSize()` and nudge the queue if it stays non-zero.
+
+**Recommended fix (not applied here).** Either give `concurrent_full` a
+sensible `nextEligibleMs` and include it in the wakeup-scheduling condition in
+`drainQueue()`, or reorder `dequeue.lua` so the owner-aware candidate scan
+runs before the concurrency check and the `blocked` status (which already
+carries a retry time) is returned when the slot is held by another pool.
+
+### 5.2 Redis Cluster is not supported
+
+The Lua scripts operate on multiple keys at once and the key names carry no
+Redis Cluster hash tag, so `CROSSSLOT` errors occur on a clustered
+deployment. This affects Redis Cluster and ElastiCache in cluster mode. Use a
+single-node Redis or a Sentinel-managed primary.
+
+A hash tag in the queue id does put every key of that queue on one slot
+(e.g. an id of `{tenant-42}:export` produces `bq:{tenant-42}:export:meta`),
+but the global keys `bq:global:wakeup` and `bq:pools` are shared across all
+queues and would still need special handling.
+
+---
+
+## 6. Day in the Life of a Rate-Limited Job
 
 **Scenario:** Guild 123 has `maxConcurrent: 1`, `minTime: 1000`. Two members join at the exact same time.
 
@@ -133,7 +245,7 @@ Register/refresh a pool in the `bq:pools` registry (dropping pools that stopped 
 * Worker B goes back to sleep. Job 2 stays in the Redis ZSET.
 
 **T=150ms (Job 1 Completes)**
-* Discord responds. Job 1 is done.
+* The upstream API responds. Job 1 is done.
 * `complete.lua` runs. Removes Job 1 from the `running` SET.
 * Jobs remain → a new notification is pushed to the owning pool.
 

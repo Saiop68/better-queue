@@ -1,40 +1,93 @@
 # BetterQueue
 
-> A Redis-backed distributed rate limiter and job queue for Node.js.
-> One global timer instead of N `setInterval`s. Real cross-process priority.
+> **Redis-backed distributed rate limiting with cross-process priority and one global timer instead of N `setInterval`s.**
+>
+> A rate limiter and job queue for Node.js whose entire queue state lives in
+> Redis — so many queues, many processes, one timer, and one globally
+> consistent ordering.
 
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
-[![Redis](https://img.shields.io/badge/Redis-6%2B-red.svg)](https://redis.io/)
+[![npm version](https://img.shields.io/npm/v/better-queue.svg)](https://www.npmjs.com/package/better-queue)
+[![npm downloads](https://img.shields.io/npm/dm/better-queue.svg)](https://www.npmjs.com/package/better-queue)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](https://nodejs.org)
+[![typescript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
+[![redis](https://img.shields.io/badge/Redis-6%2B-red.svg)](https://redis.io/)
 [![ioredis](https://img.shields.io/badge/ioredis-5.x-orange.svg)](https://github.com/luin/ioredis)
 
 ---
 
-## Better than Bottleneck
+## Table of contents
 
-Bottleneck is a solid, battle-tested library. BetterQueue is a drop-in-shaped
-alternative for the case where you have **many** limiters or **many**
-processes. The differences below are the ones that actually matter, and each
-one is implemented and covered by the test suite.
+- [Why not Bottleneck?](#why-not-bottleneck)
+  - [The four concrete advantages](#the-four-concrete-advantages)
+- [Installation](#installation)
+- [Getting started](#getting-started)
+- [Core concepts](#core-concepts)
+  - [Queues and limiters](#queues-and-limiters)
+  - [The reservoir (token bucket)](#the-reservoir-token-bucket)
+  - [`maxConcurrent` vs `minTime`](#maxconcurrent-vs-mintime)
+  - [Priority and the job score](#priority-and-the-job-score)
+  - [The two-ZSET design](#the-two-zset-design)
+- [Multiple processes and distributed usage](#multiple-processes-and-distributed-usage)
+- [Redis schema](#redis-schema)
+- [API reference](#api-reference)
+  - [`WorkerPool.create(options)`](#workerpoolcreateoptions)
+  - [`new DistributedLimiter(options)`](#new-distributedlimiteroptions)
+  - [`limiter.schedule(fn, options?)`](#limiterschedulefn-options)
+  - [Observability](#observability)
+  - [Lifecycle](#lifecycle)
+  - [Events](#events)
+  - [Errors](#errors)
+- [Full options reference](#full-options-reference)
+  - [`WorkerPool.create()` options](#workerpoolcreate-options)
+  - [`DistributedLimiter` options](#distributedlimiter-options)
+  - [`schedule()` options](#schedule-options)
+  - [`updateSettings()` patchable fields](#updatesettings-patchable-fields)
+  - [`LimiterManager` / `FeatureConfig` options](#limitermanager--featureconfig-options)
+  - [`LimiterWrapper` / `ScheduleJobOptions`](#limiterwrapper--schedulejoboptions)
+- [Crash recovery](#crash-recovery)
+- [Bottleneck compatibility layer](#bottleneck-compatibility-layer)
+- [Lua scripts](#lua-scripts)
+- [Performance](#performance)
+- [Known issues and limitations](#known-issues-and-limitations)
+- [Troubleshooting](#troubleshooting)
+- [Requirements](#requirements)
+- [Testing](#testing)
+- [License](#license)
+- [Contributing](#contributing)
+
+---
+
+## Why not Bottleneck?
+
+Bottleneck is a solid, battle-tested library, and this project does not try to
+replace it for everybody. It is aimed at the specific case where you have
+**many limiters**, **many processes**, or both — the situation where
+Bottleneck's in-process design starts to cost you memory and CPU.
+
+The comparison below is based on Bottleneck's own documentation and source.
 
 | | Bottleneck | BetterQueue |
 |---|---|---|
-| Timers | one heartbeat per limiter | **one global ticker for the whole process** |
-| Queue contents | local to each limiter; a cluster does not track them | **in Redis — shared by every process** |
-| Priority across processes | *"Priorities are local"* (Bottleneck's own docs) | **Redis-backed: a priority-1 job outranks a priority-9 job in any process** |
-| Queue state after a crash | lost | **recoverable** (inflight jobs are re-queued) |
-| JS heap per limiter | grows with the limiter's job queue | **fixed** — the queue lives in Redis |
+| Timers | one `setInterval` heartbeat **per limiter** (`heartbeatInterval`, 250 ms local / 5000 ms clustered) | **one global ticker per process** (`tickIntervalMs`, default 50 ms) + one orphan sweeper |
+| Queue contents | **local to each limiter** — "Queued jobs are NOT stored on Redis" | **in Redis** — shared by every process |
+| Priority across processes | **local** — "Priorities are local… Another limiter on the cluster might run a lower priority job before our higher priority one" | **Redis-backed and global** — a priority-1 job outranks a priority-9 job in any process |
+| Arrival order across processes | not guaranteed — "Another limiter on the cluster might run a job received later before ours runs" | global, via a server-side monotonic sequence number |
+| Queue state after a crash | lost (in-memory) | **recoverable** — inflight jobs are re-queued |
 | Delayed jobs (`scheduleAt`) | not supported | **supported** (`scheduleAt`) |
 | Token bucket "increase" mode | `reservoirIncreaseInterval` | **supported**, plus a `reservoirIncreaseMaximum` cap |
+| JS heap per limiter | grows with the limiter's job queue | bounded by pending jobs, not by limiter count |
+| Redis Cluster | supported | **not supported** — see [Known issues](#known-issues-and-limitations) |
 
 ### The four concrete advantages
 
 **1. Cross-process priority that actually works.**
 
 Bottleneck's README states plainly: *"Priorities are local. A higher priority
-job will run before a lower priority job on the same limiter. Another limiter
-on the cluster might run a lower priority job before our higher priority
-one."* It also notes that queued jobs *"are NOT stored on Redis. They are
-local to each limiter."*
+job will run before a lower priority job **on the same limiter**. Another
+limiter on the cluster might run a lower priority job before our higher
+priority one."* It also notes that queued jobs *"are NOT stored on Redis. They
+are local to each limiter."*
 
 BetterQueue stores the queue in Redis and composes each job's ZSET score as
 `priority × 1e12 + arrivalSeq`. Priority occupies the high-order digits, so
@@ -47,13 +100,28 @@ priority 9  → score 9000000000003
 
 Two processes writing to the same queue id produce one ordering, not two.
 
+> **Caveat.** The ordering is genuinely global — the *scores* are computed
+> server-side and compared in one shared ZSET. But the *execution* of a job
+> whose concurrency slot is held by another process can stall. See
+> [Known issues and limitations](#known-issues-and-limitations) before
+> relying on multi-process concurrency.
+
 **2. One global ticker instead of N timers.**
 
-Bottleneck creates a heartbeat per limiter. At 100k limiters that is 100k
-`setInterval` handles. BetterQueue runs **one** `setInterval` per process
-(`tickIntervalMs`, default 50 ms) that drains a single global wakeup ZSET and
-re-notifies the workers whose queues became eligible. Per-queue limiters hold
-configuration only.
+Bottleneck creates a heartbeat per limiter — one `setInterval` handle per
+limiter instance. At 100k limiters that is 100k timer handles. BetterQueue runs
+**one** `setInterval` per process (`tickIntervalMs`, default 50 ms) that drains
+a single global wakeup ZSET and re-notifies the workers whose queues became
+eligible, plus one orphan sweeper. Per-queue limiters hold configuration only.
+
+Measured on this repository (Node.js v20, isolated Redis):
+
+```
+setInterval calls before pool:            0
+setInterval calls after WorkerPool.create: 2   (ticker + sweeper)
+setInterval calls after creating 500 limiters: 0
+setInterval calls after running a job:        0
+```
 
 **3. The queue survives a crash.**
 
@@ -77,22 +145,23 @@ npm install better-queue ioredis
 ```
 
 Requires Node.js ≥ 18 and Redis ≥ 6. Runtime dependencies are `ioredis` and
-`lru-cache` — nothing else.
+`lru-cache` — nothing else. `ioredis` is a peer of your own application: you
+pass its options straight through to `WorkerPool.create()`.
 
 ---
 
-## Quick Start
+## Getting started
 
 ```ts
 import { WorkerPool, DistributedLimiter } from 'better-queue';
 
-// 1. Start the global pool ONCE (e.g. in your app's startup)
+// 1. Start the global worker pool ONCE (e.g. in your app's startup).
 const pool = await WorkerPool.create({
   redis: { host: 'localhost', port: 6379 },
   workers: 8,
 });
 
-// 2. Create a limiter for each queue (e.g. per guild)
+// 2. Create a limiter for each queue (e.g. per tenant).
 const limiter = new DistributedLimiter({
   id: 'guild:123456789',
   maxConcurrent: 2,
@@ -102,26 +171,512 @@ const limiter = new DistributedLimiter({
   reservoirRefreshAmount: 5,
 });
 
-// 3. Schedule work
-const result = await limiter.schedule(() => someAsyncTask());
+// 3. Schedule work.
+const results = await Promise.all([
+  limiter.schedule(async () => 'job-1'),
+  limiter.schedule(async () => 'job-2'),
+  limiter.schedule(async () => 'job-3'),
+]);
+
+console.log(results);            // [ 'job-1', 'job-2', 'job-3' ]
+console.log(await limiter.getStats());
+// { queueSize: 0, runningCount: 0, reservoir: 4 }
+
+await pool.stop();
 ```
+
+Running that file against a real Redis produces:
+
+```
+results: [ 'job-1', 'job-2', 'job-3' ]
+elapsed: 1057 ms
+stats: { queueSize: 0, runningCount: 0, reservoir: 4 }
+```
+
+The three jobs take about a second because `minTime: 500` spaces job *starts*
+by 500 ms, and the reservoir started at 10 tokens and ended at 4 (three
+consumed, one more consumed by the refill window).
+
+A runnable version of this example lives in `examples/basic.ts`.
+
+### Gotchas & common mistakes
+
+- **Your function must not resolve before its work is done.** BetterQueue
+  measures the job's lifetime by the promise you return.
+
+  ```ts
+  // BAD — returns before the work finishes
+  limiter.schedule(() => { tasks.forEach((t) => process(t)); });
+
+  // GOOD — waits for everything
+  limiter.schedule(() => Promise.all(tasks.map((t) => process(t))));
+  ```
+
+- **Bind methods.** If you pass an object's method, bind it.
+
+  ```ts
+  limiter.schedule(() => object.doSomething());      // preferred
+  limiter.schedule(object.doSomething.bind(object)); // also fine
+  ```
+
+- **Always `await pool.stop()` on shutdown.** It closes the Redis connections
+  and deregisters the pool from the live-pool registry.
+
+- **`WorkerPool.create()` must be called before you construct a
+  `DistributedLimiter`.** Otherwise the constructor throws
+  `WorkerPoolNotInitializedError`.
+
+- **`stop()` on a limiter does not wait for jobs.** Call `await
+  limiter.drain()` first if you need to wait.
 
 ---
 
-## API
+## Core concepts
+
+### Queues and limiters
+
+A **queue** is a named bucket of work, identified by a string `id`. A
+**limiter** is the JavaScript object that points at a queue and carries the
+rate-limit configuration for it.
+
+```ts
+const limiter = new DistributedLimiter({
+  id: 'tenant:acme:feature:export',
+  maxConcurrent: 2,
+  minTime: 250,
+});
+```
+
+The `id` is the only thing that defines the queue. Two `DistributedLimiter`
+instances with the same `id` — in the same process or in different processes —
+refer to the same logical queue, and they share its concurrency slots, its
+`minTime` pacing and its reservoir tokens.
+
+The limiter object itself is deliberately thin. It holds resolved configuration
+and a reference to the pool; it holds no timers, no job array, and no queue
+state. All of that lives in Redis:
+
+```
+DistributedLimiter instance:       WorkerPool (global, one per process):
+  id: "tenant:acme"     (string)     pendingJobs Map:
+  opts: {...config...}  (object)       "uuid-1" → {fn, resolve, reject}  ← only while pending
+  pool: ref             (pointer)      "uuid-2" → ...
+  ─────────────────────────────         (deleted on completion)
+```
+
+`pendingJobs` is the only mutable in-process state. Its size equals the number
+of jobs that have been `schedule()`d but have not yet completed — bounded by
+your application's concurrency, not by the number of limiters.
+
+### The reservoir (token bucket)
+
+The reservoir is a token bucket. Each job consumes one token. When the bucket
+is empty, jobs wait. There are two ways to refill it, and they mean different
+things.
+
+**Refresh — a fixed quota per window.** Every interval the bucket is **reset**
+to `reservoirRefreshAmount`.
+
+```ts
+new DistributedLimiter({
+  id: 'quota:per-minute',
+  reservoir: 100,                    // initial token count
+  reservoirRefreshAmount: 100,       // tokens the bucket is RESET to
+  reservoirRefreshInterval: 60_000,  // every 60 seconds
+  maxConcurrent: 1,
+  minTime: 333,
+});
+```
+
+This is "100 requests per minute". Note the bucket *resets*: if you consumed
+90 tokens and the window rolls over, you are back to 100, not 110.
+
+**Increase — a quota that trickles back.** Every interval the bucket **gains**
+`reservoirIncreaseAmount` tokens, up to an optional cap.
+
+```ts
+new DistributedLimiter({
+  id: 'quota:trickle',
+  reservoir: 40,                     // start with 40
+  reservoirIncreaseAmount: 2,        // +2 tokens each interval
+  reservoirIncreaseInterval: 1_000,  // every second
+  reservoirIncreaseMaximum: 40,      // never exceed 40
+  maxConcurrent: 5,
+  minTime: 250,
+});
+```
+
+This is "40 now, +2 every second, capped at 40".
+
+**Refresh and increase are mutually exclusive.** If both are configured, the
+refresh (reset) wins — this matches Bottleneck's behaviour, and the Lua
+implementation checks refresh first.
+
+```ts
+// Reset: the bucket is SET to 10 every second.
+new DistributedLimiter({
+  id: 'q',
+  reservoir: 10,
+  reservoirRefreshAmount: 10,
+  reservoirRefreshInterval: 1000,
+});
+
+// Add: the bucket GROWS 10 → 12 → 14 → … (capped by reservoirIncreaseMaximum).
+new DistributedLimiter({
+  id: 'q',
+  reservoir: 10,
+  reservoirIncreaseAmount: 2,
+  reservoirIncreaseInterval: 1000,
+  reservoirIncreaseMaximum: 40,
+});
+```
+
+**There is no per-limiter refill timer.** The bucket is maintained *lazily*:
+every dequeue attempt and every stats read checks whether an interval has
+elapsed and applies the refill inside the same Lua script. That is why the
+bucket stays accurate even when the queue is completely idle, and why you do
+not need a timer per limiter.
+
+### `maxConcurrent` vs `minTime`
+
+These are orthogonal limits and are usually used together.
+
+- **`maxConcurrent`** caps how many jobs of this queue may be *executing at the
+  same time*. It is a hard ceiling: `SCARD` of the running SET is compared
+  against it inside the atomic dequeue script.
+- **`minTime`** spaces job *starts* by at least N milliseconds, measured from
+  the moment the previous job was dequeued (`bq:{id}:lastRun`).
+
+| | `maxConcurrent` | `minTime` |
+|---|---|---|
+| Limits | simultaneous executions | start-to-start spacing |
+| Measured by | `SCARD bq:{id}:running` | `bq:{id}:lastRun` timestamp |
+| Applies to | all jobs in the queue | all jobs in the queue |
+| Use for | "never more than 2 in flight" | "at most one every 333 ms" |
+
+`maxConcurrent: 1, minTime: 0` gives you a strictly sequential queue.
+`maxConcurrent: 10, minTime: 0` gives you pure concurrency with no pacing.
+`maxConcurrent: 1, minTime: 500` gives you one job every 500 ms, no overlap.
+
+Note that `minTime` is measured between *dequeues*, not between completions.
+A job that takes 10 seconds does not push the next start out by 10 seconds —
+only the 10-second duration of the job itself overlaps with the next start
+unless `maxConcurrent` forbids it.
+
+### Priority and the job score
+
+Every job carries a priority, an integer where **lower = more important**.
+The default is `5`; the convention in this library and in Bottleneck is the
+range `1` (highest) to `10` (lowest), and the Lua layer clamps the value to
+`0…99` so a composed score can never lose precision.
+
+The score used to order the ready ZSET is:
+
+```
+score = priority × 1e12 + arrivalSeq
+```
+
+- `priority` occupies the **high-order digits**. A priority-1 job always sorts
+  ahead of a priority-9 job, no matter which arrived first.
+- `arrivalSeq` is a monotonic counter kept in the queue's `meta` HASH and
+  incremented with `HINCRBY`. It breaks ties, so jobs of the same priority
+  run **FIFO**.
+
+`1e12` leaves room for 1e12 arrivals within a single priority band, and keeps
+every composed score an exact integer (Redis scores are IEEE-754 doubles, so
+integers are exact up to 2^53).
+
+```
+priority 1, 2nd arrival  → 1 × 1000000000000 + 2 = 1000000000002
+priority 9, 3rd arrival  → 9 × 1000000000000 + 3 = 9000000000003
+```
+
+**The score is composed server-side.** `enqueue.lua` reads the Redis server
+clock with `TIME` and computes the score inside Redis, not in Node.js. Two
+consequences:
+
+1. **Priority ordering cannot be broken by client clock skew.** A machine
+   with a fast or slow clock cannot jump the queue.
+2. **The arrival sequence is global.** Because `HINCRBY meta seq` happens in
+   Redis, the tie-break order is the real Redis-side arrival order across all
+   processes — not "whichever client called first".
+
+Priority is applied to *ready* jobs. A delayed job keeps its due time as its
+score in the `delayed` ZSET; when it is promoted into the ready set it
+receives a fresh priority score at that moment.
+
+### The two-ZSET design
+
+Each queue keeps its jobs in **two separate sorted sets**, and the split is
+deliberate:
+
+```
+bq:{id}:jobs      ZSET   READY   score = priority × 1e12 + arrivalSeq
+bq:{id}:delayed   ZSET   WAITING score = due time (unix ms)
+```
+
+**Why they are separate.** The two sets are ordered by completely different
+quantities. The ready set is ordered by *importance* (priority first, arrival
+second). The delayed set is ordered by *time* (earliest due time first). If
+they were merged into one ZSET you would have to pick a single score
+semantics, and either priority or due time would be lost. Splitting them means
+each set can use the ordering it actually needs, and both are O(log n)
+Redis-native structures.
+
+The consequence of keeping them apart is that "not yet due" is a *different
+state* from "ready but rate-limited", and the library can tell them apart:
+
+- A job in `delayed` is **not eligible**. It becomes eligible when
+  `now >= due`.
+- A job in `jobs` is **eligible**, but the rate limits (`maxConcurrent`,
+  `minTime`, reservoir) may still hold it back.
+
+The promotion from `delayed` → `jobs` happens **inside the dequeue script**,
+atomically, so a delayed job can never be observed "half-promoted":
+
+```lua
+local dueJobs = redis.call('ZRANGEBYSCORE', delayedKey, '-inf', fmtScore(now))
+if #dueJobs > 0 then
+  for i = 1, #dueJobs do
+    redis.call('ZREM', delayedKey, dueJobs[i])
+    local prio = ...
+    local seq  = redis.call('HINCRBY', metaKey, 'seq', 1)
+    redis.call('ZADD', jobsKey, fmtScore(prio * PRIORITY_SCALE + seq), dueJobs[i])
+  end
+end
+```
+
+Retry backoff uses the same mechanism: a failed job is re-enqueued with a
+*relative* delay, so the Redis server clock — not the client clock — decides
+when it becomes due.
+
+---
+
+## Multiple processes and distributed usage
+
+Each process creates its own `WorkerPool`. Two processes pointing at the same
+Redis are two independent engines that share one set of queues.
+
+### The pool registry (`bq:pools`)
+
+Every pool announces itself in a ZSET whose score is its last heartbeat:
+
+```
+bq:pools   ZSET   member = poolId, score = last heartbeat (ms, server clock)
+```
+
+The heartbeat is refreshed by the same global ticker that drains the wakeup
+ZSET, so it costs no extra timer. A pool that stops heartbeating falls out of
+the live window automatically (`POOL_LIVE_WINDOW_MS` = 30 s), which means the
+registry **self-cleans** — no garbage collector, no lease cleanup job.
+
+### Per-pool notification channels
+
+This is the part that makes multi-process operation safe, and it is worth
+understanding precisely.
+
+A job's executable function is a **JavaScript closure**. It exists only in
+the process that created it. Redis can store data; it cannot store a closure.
+Therefore:
+
+> **Only the process that scheduled a job can ever run it.**
+
+Every `WorkerPool` consequently listens on its **own** notification channel:
+
+```
+bq:workers:notify:<poolId>   LIST   the queue ids this pool should look at
+```
+
+Each worker does `BRPOP bq:workers:notify:<its own poolId>`. If every pool
+shared one channel, process B could steal process A's notification, and A's
+job would sit in Redis forever with nobody looking at it. Per-pool channels
+make that impossible: a notification can only ever be consumed by the process
+it was addressed to.
+
+### Owner-stamped jobs
+
+Every job payload carries the id of the pool that scheduled it:
+
+```json
+{
+  "id": "0b71fa75-ca3e-4618-9bcd-29fa3826e0eb",
+  "priority": 5,
+  "maxRetries": 3,
+  "retryCount": 0,
+  "enqueuedAt": 1793311108964,
+  "owner": "996091-f15cee82"
+}
+```
+
+`owner` is `<pid>-<8 hex chars>`, unique per `WorkerPool` instance.
+
+The dequeue script uses it to find jobs this pool can actually run. It scans
+the ready ZSET for the first entry whose `owner` matches the calling pool
+(payloads with no `owner` field are treated as claimable by anyone, for
+backwards compatibility):
+
+```lua
+local function firstOwned(candidates)
+  for i = 1, #candidates do
+    local p = candidates[i]
+    local o = ownerOf(p)
+    if (not o) or (o == ownerId) then
+      return p
+    end
+  end
+  return nil
+end
+```
+
+### How two processes coordinate on one queue id
+
+Given two processes, `A` and `B`, both using queue id `shared`:
+
+1. `A` calls `schedule()`. The closure is stored in `A`'s `pendingJobs` map.
+   `enqueue.lua` writes the job into `bq:shared:jobs` with `owner = A`, and
+   `LPUSH`es `shared` onto `bq:workers:notify:<A>`.
+2. `B` calls `schedule()`. Same thing, but `owner = B` and the notification
+   goes to `bq:workers:notify:<B>`.
+3. `enqueue.lua` also *fans out* to every other live pool in `bq:pools`, so
+   both processes learn that the shared queue has work.
+4. When `A`'s worker pops its notification and runs `dequeue.lua`, it scans
+   the ready ZSET and picks the first entry owned by `A` — skipping `B`'s
+   jobs. The scan is bounded by `DEQUEUE_SCAN_WINDOW` (256 entries) so it
+   cannot become unbounded.
+5. Rate-limit accounting — `maxConcurrent`, `minTime`, the reservoir — is
+   **global**. The running SET, the `lastRun` timestamp and the token count
+   are shared Redis structures, so `maxConcurrent: 1` really does mean "one
+   job of this queue at a time across the whole cluster".
+
+So the two processes produce **one shared queue with one global ordering**,
+and each process runs only the jobs whose closures it holds.
+
+> **Read this before deploying multiple processes.** The coordination above
+> works, but there is a known bug where a job whose concurrency slot is held
+> by *another* process can stall until an unrelated notification arrives. It
+> is documented in full, with reproduction steps, in
+> [Known issues and limitations](#known-issues-and-limitations).
+
+---
+
+## Redis schema
+
+Every key is namespaced under `bq:`. All per-queue keys are derived from the
+limiter's `id`:
+
+```
+bq:{id}:jobs          bq:{id}:delayed      bq:{id}:running
+bq:{id}:inflight      bq:{id}:meta         bq:{id}:reservoir
+bq:{id}:lastRun       bq:{id}:lastRefresh  bq:{id}:lastIncrease
+bq:workers:notify:{poolId}   bq:global:wakeup    bq:pools
+```
+
+| Key | Type | Purpose | TTL |
+|---|---|---|---|
+| `bq:{id}:jobs` | ZSET | **Ready** jobs. Score = `priority × 1e12 + arrivalSeq`. | limiter `ttl` |
+| `bq:{id}:delayed` | ZSET | Jobs **not yet due** (`scheduleAt`, retry backoff). Score = due time (unix ms). | limiter `ttl` |
+| `bq:{id}:running` | SET | Job IDs currently executing. Enforces `maxConcurrent`. | limiter `ttl` |
+| `bq:{id}:inflight` | HASH | `jobId → payload`, for crash recovery. | limiter `ttl` |
+| `bq:{id}:meta` | HASH | Queue config (`maxConcurrent`, `minTime`, reservoir settings, `ttl`) **plus the `seq` arrival counter**. | limiter `ttl` |
+| `bq:{id}:reservoir` | STRING (int) | Current token count. | limiter `ttl` |
+| `bq:{id}:lastRun` | STRING (ms) | Timestamp of the last dequeue. Enforces `minTime`. | limiter `ttl` |
+| `bq:{id}:lastRefresh` | STRING (ms) | Timestamp of the last reservoir **refresh**. | limiter `ttl` |
+| `bq:{id}:lastIncrease` | STRING (ms) | Timestamp of the last reservoir **increase**. | limiter `ttl` |
+| `bq:workers:notify:{poolId}` | LIST | Per-pool worker signal channel. Carries queue ids to look at. | none (deleted on `pool.stop()`) |
+| `bq:global:wakeup` | ZSET | Scheduled wakeups. Member = `<poolId>\|<queueId>`, score = wakeup time (ms). | none |
+| `bq:pools` | ZSET | Live pool registry. Member = `poolId`, score = last heartbeat (ms). | none (self-cleaning) |
+
+### `meta` — the queue configuration hash
+
+```
+maxConcurrent             reservoirRefreshAmount
+minTime                   reservoirIncreaseInterval
+reservoir                 reservoirIncreaseAmount
+reservoirRefreshInterval  reservoirIncreaseMaximum
+ttl
+seq                       ← monotonic arrival counter (HINCRBY)
+```
+
+`seq` lives in the same hash as the config because the ZSET score needs both
+the priority and a tie-break sequence, and the hash is read in the same
+script.
+
+### Idle cleanup
+
+When a queue drains completely (`pending == 0` and `running == 0`),
+`complete.lua` **immediately deletes** the volatile runtime keys:
+
+```
+DEL bq:{id}:running  bq:{id}:inflight  bq:{id}:jobs
+DEL bq:{id}:delayed  bq:{id}:lastRun
+ZREM bq:global:wakeup <poolId>|<queueId>
+```
+
+The `meta` key survives so that recreating the limiter is cheap, and any
+pending wakeup entry is removed so the global ticker does not keep waking a
+queue that no longer exists.
+
+Observed directly:
+
+```
+keys after queue went idle:
+   bq:pools            type=zset
+   bq:probe:clean:meta type=hash
+```
+
+### A note on TTLs
+
+The limiter's `ttl` option (default **3600 s**) is what the Lua scripts apply
+to the per-queue keys. However, `WorkerPool` also has an internal
+`defaultTtl` of **86400 s** that it passes to the scripts for the job-lifecycle
+keys. The practical effect, observed on a live instance:
+
+| Key | TTL while a job is queued | TTL after the queue drains |
+|---|---|---|
+| `bq:{id}:meta` | limiter `ttl` | `86400` (pool default) |
+| `bq:{id}:jobs` / `running` / `inflight` / `lastRun` | limiter `ttl` | deleted (idle cleanup) |
+| `bq:{id}:reservoir` / `lastRefresh` / `lastIncrease` | limiter `ttl` | limiter `ttl` |
+
+In other words: while the queue is busy, your `ttl` governs. Once it is idle,
+the config hash is kept alive for a day so a re-created limiter does not have
+to re-sync. If you need the keys to disappear sooner, set a smaller `ttl` and
+be aware that the `meta` hash will still be refreshed to the pool default on
+the completion path.
+
+---
+
+## API reference
 
 ### `WorkerPool.create(options)`
 
-Initialize the global worker pool. Call once at startup.
+Initialise the global worker pool. Call once at startup, before creating any
+limiter.
 
 ```ts
 const pool = await WorkerPool.create({
   redis: { host: 'localhost', port: 6379 },  // ioredis options
   workers: 8,                 // concurrent workers (default: 64)
-  tickIntervalMs: 50,         // global ticker interval (default: 50ms)
-  visibilityTimeoutMs: 300_000, // crash recovery timeout (default: 5min)
-  pendingJobTimeoutMs: 300_000, // orphan sweeper timeout (default: 5min, 0 = off)
+  tickIntervalMs: 50,         // global ticker interval (default: 50)
+  visibilityTimeoutMs: 300_000, // crash recovery timeout (default: 5 min)
+  pendingJobTimeoutMs: 300_000, // orphan sweeper timeout (default: 5 min, 0 = off)
 });
+```
+
+The `redis` object is passed straight to `ioredis`, so any
+[`ioredis` option](https://github.com/luin/ioredis/blob/main/API.md) works —
+`host`, `port`, `username`, `password`, `tls`, `db`, etc.
+
+`WorkerPool.create()` is **idempotent**: calling it again returns the
+existing pool and ignores the new options.
+
+`WorkerPool` also exposes:
+
+```ts
+WorkerPool.getInstance();          // the active pool; throws if not created
+await pool.stop();                  // graceful shutdown
+pool.poolId;                        // this pool's unique id
+pool.commandClient;                 // the shared ioredis client
+pool.pendingJobs;                   // Map<string, PendingJob>
 ```
 
 ### `new DistributedLimiter(options)`
@@ -139,28 +694,15 @@ const limiter = new DistributedLimiter({
   reservoirRefreshAmount: 5,       // tokens RESET to on each refill (default: 0)
   reservoirIncreaseInterval: 0,    // token INCREASE interval ms (default: 0)
   reservoirIncreaseAmount: 0,      // tokens ADDED on each increase (default: 0)
-  reservoirIncreaseMaximum: 0,     // cap for increase mode (default: 0 = unbounded)
+  reservoirIncreaseMaximum: 0,    // cap for increase mode (default: 0 = unbounded)
   priority: 5,                     // default priority 1–10 (default: 5)
-  ttl: 86_400,                     // Redis key TTL seconds (default: 3600)
+  ttl: 3_600,                      // Redis key TTL seconds (default: 3600)
   retryOnFailure: true,            // retry failed jobs (default: true)
   maxRetries: 3,                   // max retry attempts (default: 3)
 });
 ```
 
-#### Reservoir: refresh vs. increase
-
-Two different token-bucket behaviours, matching Bottleneck's naming:
-
-- **Refresh** (`reservoirRefreshInterval` + `reservoirRefreshAmount`) —
-  every interval the bucket is **reset** to `reservoirRefreshAmount`.
-  Use it for a fixed quota per window ("100 requests per minute").
-- **Increase** (`reservoirIncreaseInterval` + `reservoirIncreaseAmount`) —
-  every interval the bucket **gains** `reservoirIncreaseAmount` tokens.
-  Use it for a quota that trickles back ("40 now, +2 every second").
-  `reservoirIncreaseMaximum` caps the bucket.
-
-Refresh and increase are mutually exclusive: if both are configured, the
-refresh (reset) wins.
+The limiter is an `EventEmitter` and also exposes `limiter.id`.
 
 ### `limiter.schedule(fn, options?)`
 
@@ -169,11 +711,11 @@ value.
 
 ```ts
 const data = await limiter.schedule(
-  () => fetch('/api/endpoint').then(r => r.json()),
+  () => fetch('/api/endpoint').then((r) => r.json()),
   {
-    priority: 1,                   // override priority (1=highest, 10=lowest)
+    priority: 1,                    // override priority (1 = highest, 10 = lowest)
     scheduleAt: Date.now() + 5_000, // delay job by 5 seconds
-    maxRetries: 5,                 // override max retries for this job
+    maxRetries: 5,                  // override max retries for this job
   },
 );
 ```
@@ -185,15 +727,24 @@ either style compiles:
 await limiter.schedule({ priority: 1 }, () => doWork());
 ```
 
+`schedule()` throws `LimiterStoppedError` if the limiter has been stopped, and
+`TypeError` if you pass options without a function.
+
 ### Observability
 
 ```ts
-// All stats come from Redis — never from memory
+// All stats come from Redis — never from memory.
 await limiter.getStats();        // { queueSize, runningCount, reservoir }
 await limiter.getQueueSize();    // number of pending jobs (ready + delayed)
 await limiter.getRunningCount(); // number of executing jobs
 await limiter.getReservoir();    // current token count (null if not configured)
 ```
+
+`getStats()` performs the same lazy reservoir maintenance as the dequeue
+script, so `reservoir` is accurate even when the queue is completely idle —
+no timer needed to keep it honest.
+
+`queueSize` counts **ready + delayed** jobs: everything still pending.
 
 ### Lifecycle
 
@@ -203,6 +754,22 @@ await limiter.drain();  // wait for all queued + running jobs to finish
 limiter.stop();         // no longer accept new jobs (non-blocking)
 await pool.stop();      // gracefully stop all workers
 ```
+
+`drain()` polls Redis every 100 ms and resolves when `queueSize === 0` and
+`runningCount === 0`. It then emits `drained`. Pass a timeout to bound it:
+
+```ts
+await limiter.drain(30_000); // rejects after 30s if the queue will not empty
+```
+
+`stop()` on a limiter marks it stopped (so `schedule()` throws
+`LimiterStoppedError`), detaches it from the pool's shared emitter, and
+removes all of its event listeners.
+
+`pool.stop()` stops the ticker and the sweeper, rejects any still-pending
+promises with `OrphanedJobError`, stops all workers, deregisters the pool from
+`bq:pools`, deletes its notification channel, and closes the Redis
+connection.
 
 ### Events
 
@@ -214,118 +781,334 @@ limiter.on('retry',     (jobId, attempt) => console.log('retry:', jobId, attempt
 limiter.on('drained',   () => console.log('queue empty'));
 ```
 
-Events are scoped to the limiter's own queue id.
+Events are scoped to the limiter's own queue id — a limiter never sees
+another queue's jobs. The listener signatures are typed, so TypeScript will
+catch a mismatch.
 
----
+| Event | Payload | Fired when |
+|---|---|---|
+| `executing` | `(jobId: string)` | The job's function has been invoked. |
+| `done` | `(jobId: string)` | The job resolved successfully. |
+| `failed` | `(jobId: string, error: unknown)` | The job failed and the retry budget was exhausted (or re-enqueueing failed). |
+| `retry` | `(jobId: string, attempt: number)` | The job threw and is being retried. `attempt` is 1-based. |
+| `drained` | `()` | `drain()` observed an empty queue. |
 
-## Multiple processes
+A complete example:
 
-Each process creates its own `WorkerPool`. Jobs are stamped with the id of
-the pool that scheduled them, because a job's executable function is a JS
-closure that only exists in the scheduling process. Each pool therefore
-listens on its **own** notification channel (`bq:workers:notify:<poolId>`),
-so a notification can never be consumed by a different process.
+```ts
+import { WorkerPool, DistributedLimiter } from 'better-queue';
 
-Rate-limit accounting (`maxConcurrent`, `minTime`, the reservoir) is
-**global** — it is shared by every process working on the same queue id,
-which is what makes the limiter meaningful across a cluster.
+const pool = await WorkerPool.create({
+  redis: { host: 'localhost', port: 6379 },
+});
 
-Pools announce themselves in a `bq:pools` registry that is refreshed by the
-global ticker and self-cleans when a process dies.
+const limiter = new DistributedLimiter({ id: 'demo', maxConcurrent: 1, maxRetries: 1 });
 
----
+limiter.on('executing', (jobId) => console.log('  ▶ start', jobId.slice(0, 8)));
+limiter.on('done',      (jobId) => console.log('  ✓ done ', jobId.slice(0, 8)));
+limiter.on('retry',     (jobId, attempt) => console.log('  ↻ retry', jobId.slice(0, 8), attempt));
+limiter.on('failed',    (jobId, err) => console.error('  ✗ fail ', jobId.slice(0, 8), err));
+limiter.on('drained',   () => console.log('  ∅ drained'));
 
-## Redis Schema
+await limiter.schedule(async () => 'ok');
+await limiter.schedule(async () => { throw new Error('boom'); }).catch(() => {});
 
-| Key | Type | Purpose |
-|-----|------|---------|
-| `bq:{id}:jobs` | ZSET | Ready jobs. Score = `priority × 1e12 + arrivalSeq` |
-| `bq:{id}:delayed` | ZSET | Jobs not yet due. Score = due time (ms) |
-| `bq:{id}:running` | SET | Job IDs currently executing |
-| `bq:{id}:inflight` | HASH | `jobId → payload` for crash recovery |
-| `bq:{id}:meta` | HASH | Queue config + the arrival counter |
-| `bq:{id}:reservoir` | STRING | Current token count |
-| `bq:{id}:lastRun` | STRING | Timestamp of last dequeue (ms) |
-| `bq:{id}:lastRefresh` | STRING | Timestamp of last reservoir refresh (ms) |
-| `bq:{id}:lastIncrease` | STRING | Timestamp of last reservoir increase (ms) |
-| `bq:workers:notify:<poolId>` | LIST | Per-pool worker signal channel |
-| `bq:global:wakeup` | ZSET | Scheduled wakeups, member = `<poolId>|<queueId>` |
-| `bq:pools` | ZSET | Live pool registry, score = last heartbeat (ms) |
-
-All keys use a configurable TTL. Inactive queues auto-expire — no manual
-cleanup needed.
-
----
-
-## Memory Architecture
-
-### Why Bottleneck grows at scale
-
-When you create 10,000 Bottleneck instances (one per guild), you get:
-- 10,000 `setInterval` handles (one heartbeat per limiter)
-- 10,000 in-memory job queues (grows with pending jobs)
-- Job history retained in memory (grows over time)
-
-### How BetterQueue differs
-
-```
-DistributedLimiter instance:       WorkerPool (global, one per process):
-  id: "guild:123"         (28B)      pendingJobs Map:
-  opts: {...config...}    (40B)        "uuid-1" → {fn, resolve, reject}  ← exists only while job pending
-  pool: ref               (8B)         "uuid-2" → ...
-  ─────────────────────────────        (auto-deleted on completion)
-  Total: ~50 bytes
-
-  100,000 limiters = ~5 MB heap
+await limiter.drain(10_000);
+await pool.stop();
 ```
 
-**The `pendingJobs` Map** is the only mutable in-process state. Its size
-equals the number of jobs that have been `schedule()`d but not yet completed —
-bounded by your application's concurrency, not by the number of limiters.
+Observed output:
+
+```
+  ▶ start ba4b9b7b
+  ✓ done  ba4b9b7b
+  ▶ start 573b8ff9
+  ↻ retry 573b8ff9 1
+  ▶ start 573b8ff9
+  ✗ fail  573b8ff9 JobMaxRetriesError: Job 573b8ff9-… failed after 2 attempt(s): boom
+  ∅ drained
+```
+
+Note that `drained` is emitted by `drain()` itself — it is not a background
+notification that fires the moment a queue becomes empty.
+
+### Retries
+
+`maxRetries` counts **retries**, not total attempts. With `maxRetries: 1` the
+job runs at most twice: the first attempt plus one retry. The `retry` event
+carries the 1-based attempt number, and the final failure reports the total
+number of attempts:
+
+```
+maxRetries: 1  →  2 attempts total  →  "failed after 2 attempt(s)"
+maxRetries: 3  →  4 attempts total  →  "failed after 4 attempt(s)"
+```
+
+Retries use **exponential backoff** of `1s, 2s, 4s, 8s, …`, capped at 30 s.
+The delay is applied as a *relative* delay, so the Redis server clock — not
+the client clock — decides when the retry becomes due.
+
+If `retryOnFailure` is `false`, the job is not retried at all and the promise
+rejects on the first failure.
+
+### Errors
+
+All library errors extend `BetterQueueError`.
+
+| Error | Thrown when |
+|---|---|
+| `BetterQueueError` | Base class for everything below. |
+| `WorkerPoolNotInitializedError` | A `DistributedLimiter` was constructed before `WorkerPool.create()`. |
+| `LimiterStoppedError` | `schedule()` was called on a stopped limiter. |
+| `JobMaxRetriesError` | A job failed and its retry budget was exhausted. Carries `jobId`, `attempts` and `cause`. |
+| `OrphanedJobError` | A pending job was evicted without executing (lost notification, or the pool was stopped). |
+| `RedisCommandError` | A Redis command failed unexpectedly. |
+
+```ts
+import { JobMaxRetriesError } from 'better-queue';
+
+try {
+  await limiter.schedule(async () => { throw new Error('upstream 500'); });
+} catch (err) {
+  if (err instanceof JobMaxRetriesError) {
+    console.error(err.jobId, err.attempts, err.cause);
+  }
+}
+```
+
+`JobMaxRetriesError` includes the underlying error's message, so
+`err.message` reads `Job <id> failed after 2 attempt(s): upstream 500`.
 
 ---
 
-## Crash Recovery
+## Full options reference
+
+### `WorkerPool.create()` options
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `redis` | `RedisOptions` | — (**required**) | ioredis connection options, passed straight through. |
+| `workers` | `number` | `64` | Number of concurrent workers. Each worker holds one blocking (BRPOP) Redis connection. |
+| `tickIntervalMs` | `number` | `50` | Interval of the single global ticker that drains `bq:global:wakeup` and refreshes the pool heartbeat. |
+| `visibilityTimeoutMs` | `number` | `300000` (5 min) | An inflight job older than this is considered orphaned and re-queued by crash recovery. |
+| `pendingJobTimeoutMs` | `number` | `300000` (5 min) | How long a `pendingJobs` entry may live before the orphan sweeper rejects it. `0` disables the sweeper. |
+
+Sizing guidance for `workers`, from the source's own notes: each worker is
+one blocking Redis connection (~2 MB RAM), so
+`workers ≈ peak_concurrent_queues × jobs_per_queue_per_second × avg_job_duration_seconds`.
+64 workers handles roughly 640 concurrent upstream calls; 128 handles ~1280.
+
+### `DistributedLimiter` options
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `id` | `string` | — (**required**) | Unique queue identifier. Becomes the Redis namespace `bq:{id}:*`. |
+| `maxConcurrent` | `number` | `1` | Maximum jobs executing simultaneously in this queue, **globally across all processes**. |
+| `minTime` | `number` | `0` | Minimum milliseconds between consecutive job **starts**. |
+| `reservoir` | `number` | `-1` (unlimited) | Initial token count. Omit or use `-1` to disable the token bucket. `0` is valid (start empty). |
+| `reservoirRefreshInterval` | `number` | `0` (disabled) | Interval in ms at which the reservoir is refilled. Requires `reservoir` and `reservoirRefreshAmount`. |
+| `reservoirRefreshAmount` | `number` | `0` (disabled) | The value the reservoir is **reset** to on each refresh interval. |
+| `reservoirIncreaseInterval` | `number` | `0` (disabled) | Interval in ms at which the reservoir is **incremented**. Requires `reservoir`. |
+| `reservoirIncreaseAmount` | `number` | `0` (disabled) | Number of tokens **added** on each increase interval. |
+| `reservoirIncreaseMaximum` | `number` | `0` (unbounded) | Maximum value the reservoir may reach in increase mode. |
+| `priority` | `number` | `5` | Default job priority. Lower = more important. Conventionally `1`–`10`. |
+| `ttl` | `number` | `3600` (1 h) | Redis key TTL in seconds for this queue's keys. |
+| `retryOnFailure` | `boolean` | `true` | Whether failed jobs are retried. |
+| `maxRetries` | `number` | `3` | Maximum **retries** per job (so `3` means up to 4 attempts in total). |
+
+**Refresh vs increase, one more time.** `reservoirRefreshAmount` **resets**
+the bucket to a fixed value; `reservoirIncreaseAmount` **adds** to it. If both
+are configured, refresh wins.
+
+### `schedule()` options
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `priority` | `number` | limiter's `priority` | Job priority. Lower = more important. Clamped to `0…99` server-side. |
+| `scheduleAt` | `number` | `0` (now) | Unix timestamp in ms. The job will not start before this time. |
+| `maxRetries` | `number` | limiter's `maxRetries` (or `0` when `retryOnFailure` is `false`) | Retry budget for this specific job. Counts **retries**, not total attempts. |
+
+### `updateSettings()` patchable fields
+
+`updateSettings()` writes to the queue's `meta` hash in Redis, so the change
+takes effect on the next dequeue attempt by **every** process working on that
+queue.
+
+```ts
+await limiter.updateSettings({
+  maxConcurrent: 4,
+  minTime: 250,
+  reservoir: 20,
+  reservoirRefreshInterval: 1_000,
+  reservoirRefreshAmount: 10,
+  reservoirIncreaseInterval: 0,
+  reservoirIncreaseAmount: 0,
+  reservoirIncreaseMaximum: 40,
+  ttl: 600,
+});
+```
+
+| Field | Writable | Notes |
+|---|---|---|
+| `maxConcurrent` | ✅ | |
+| `minTime` | ✅ | |
+| `reservoir` | ✅ | |
+| `reservoirRefreshInterval` | ✅ | |
+| `reservoirRefreshAmount` | ✅ | |
+| `reservoirIncreaseInterval` | ✅ | |
+| `reservoirIncreaseAmount` | ✅ | |
+| `reservoirIncreaseMaximum` | ✅ | |
+| `ttl` | ✅ | |
+| `priority` | ❌ | Not written. The default priority is a client-side setting. |
+| `retryOnFailure` | ❌ | Not written. Retry behaviour is decided at schedule time. |
+| `maxRetries` | ❌ | Not written. Use the per-job `maxRetries` in `schedule()`. |
+| `id` | ❌ | The queue identity is immutable. |
+
+Calling `updateSettings({})` is a no-op and performs no Redis write.
+
+### `LimiterManager` / `FeatureConfig` options
+
+`LimiterManager` is the Bottleneck-compatible layer. `FeatureConfig` is the
+per-feature configuration you register at startup.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `maxConcurrent` | `number` | `10` | Max concurrent jobs per queue. |
+| `reservoir` | `number` | `-1` (unlimited) | Token bucket size. Values `<= 0` are treated as unlimited. |
+| `reservoirRefreshAmount` | `number` | `10` | Tokens the bucket is reset to on each refresh. |
+| `reservoirRefreshInterval` | `number` | `1000` | Refresh interval in ms. |
+| `reservoirIncreaseInterval` | `number` | `0` (disabled) | Increase interval in ms. |
+| `reservoirIncreaseAmount` | `number` | `0` (disabled) | Tokens added per increase interval. |
+| `reservoirIncreaseMaximum` | `number` | `0` (unbounded) | Cap for increase mode. |
+| `minTime` | `number` | `0` | Minimum ms between job starts. |
+| `timeout` | `number` | `30000` | Per-job timeout in ms. Implemented client-side with `Promise.race`. |
+| `ttl` | `number` | `600` (10 min) | Redis key TTL in seconds. |
+| `maxRetries` | `number` | `3` | Max **retries** per job. `0` disables retrying (the job fails on its first attempt). |
+| `trackDoneStatus` | `boolean` | — | **Ignored.** Accepted for Bottleneck compatibility. BetterQueue always tracks status in Redis, so there is no overhead to disable. |
+
+`registerFeatureConfig(feature, config)` merges your config over the defaults
+and stores it in an LRU (max 200 entries). `getLimiter(guildId, feature)`
+creates the limiter lazily and caches it under the key
+`` `${guildId}::${feature}` `` in an LRU (max 10 000 entries, 10-minute TTL).
+
+> **Important.** `timeout` is enforced client-side by racing your function
+> against a timer. If your job can legitimately run longer than `timeout`,
+> either raise it or make sure the pool's `visibilityTimeoutMs` is **at least**
+> as large as the longest job timeout — otherwise crash recovery can re-enqueue
+> a job that is still running.
+
+### `LimiterWrapper` / `ScheduleJobOptions`
+
+`LimiterManager.getLimiter()` returns a `LimiterWrapper`, which exposes a
+Bottleneck-shaped API:
+
+```ts
+const limiter = limiterManager.getLimiter(guildId, 'guild-member-add');
+
+await limiter.schedule(() => doWork());
+await limiter.schedule({ id: 'some-id', priority: 2 }, () => doWork());
+```
+
+| `ScheduleJobOptions` field | Type | Description |
+|---|---|---|
+| `id` | `string` | Optional job identifier, for logging and deduplication. |
+| `priority` | `number` | Lower = higher priority. |
+| `scheduleAt` | `number` | Unix ms; the job will not start before this time. |
+
+`LimiterWrapper` also provides:
+
+| Method | Returns | Notes |
+|---|---|---|
+| `schedule(fn)` / `schedule(options, fn)` | `Promise<T>` | Wraps the task in a timeout race. |
+| `counts()` | `Promise<{RECEIVED, QUEUED, RUNNING, EXECUTING, DONE}>` | Bottleneck-shaped counters. `RECEIVED` and `DONE` are always `0` — BetterQueue has no in-process queue and Redis cleans up completed jobs. |
+| `drain()` | `Promise<void>` | Waits for the queue to empty. |
+| `stop()` | `void` | Stops accepting new jobs. |
+| `inner` | `DistributedLimiter` | Direct access to the underlying limiter. |
+
+`LimiterManager` itself exposes `registerFeatureConfig`, `getLimiter`,
+`removeLimiter`, `removeGuildLimiters`, `clearAll`, `getStats`,
+`getCacheUsage` and `drainGuild`.
+
+---
+
+## Crash recovery
 
 If your process crashes while jobs are executing:
 
-1. On restart, `recoverQueue()` runs automatically on each limiter's first use.
+1. On restart, `recoverQueue()` runs automatically on each limiter's first
+   use (the limiter lazily initialises on its first `schedule()` or stats
+   read).
 2. It scans the `bq:{id}:inflight` HASH for jobs older than
-   `visibilityTimeoutMs` (5 min).
-3. Eligible jobs are re-enqueued in the ZSET with an incremented retry counter.
+   `visibilityTimeoutMs` (5 minutes by default).
+3. Eligible jobs are re-enqueued in the ready ZSET with an incremented retry
+   counter, keeping their priority. If the retry budget is exhausted, the
+   job is dropped.
+4. The owning pool is notified so the queue is looked at again.
 
-> **Note:** the job's closure lived in the crashed process, so a recovered job
-> cannot be executed — it preserves the queue's ordering and counters, but the
-> work itself must be re-submitted by your application. The original Promise
-> is gone either way.
+> **The honest limitation.** The job's closure lived in the crashed process,
+> so a recovered job **cannot be executed**. Recovery preserves the queue's
+> ordering, its counters and its token accounting, and it makes the
+> backlog visible again — but the work itself must be **re-submitted by your
+> application**. The original `Promise` was lost with the process and can
+> never be settled.
 
----
+In other words, crash recovery is *bookkeeping* recovery, not *execution*
+recovery. If your jobs must survive a crash and still run, you need a
+durable job store (a database, SQS, and so on) that holds the work itself and
+re-submits it — BetterQueue holds the closure, and closures do not survive a
+crash.
 
-## Lua Scripts
-
-All critical operations are implemented as atomic Lua scripts to prevent race
-conditions:
-
-| Script | Purpose |
-|--------|---------|
-| `enqueue.lua` | Add job to the ready/delayed set + signal the owner pool |
-| `dequeue.lua` | Fetch the next eligible job owned by this pool (rate-limit-aware, lazy reservoir refresh/increase) |
-| `complete.lua` | Release the running slot + re-signal + idle cleanup |
-| `wakeup_check.lua` | Global ticker — wake queues whose delay expired |
-| `recover.lua` | Re-enqueue orphaned crashed jobs |
-| `stats.lua` | Atomic stats snapshot (with lazy reservoir maintenance) |
-| `pool_heartbeat.lua` | Register/refresh this pool's liveness |
-| `pool_unregister.lua` | Deregister a pool on shutdown |
+The visibility timeout is the trade-off knob. A shorter
+`visibilityTimeoutMs` recovers stale slots sooner, at the cost of possibly
+re-queuing a job that was merely slow. A longer one is safer for long jobs
+but leaves the queue blocked for longer after a crash. Set it to at least your
+longest expected job duration.
 
 ---
 
 ## Bottleneck compatibility layer
 
 `src/LimiterManager.ts` provides a drop-in-shaped manager for code that was
-written against a Bottleneck-based `LimiterManager`:
+written against a Bottleneck-based `LimiterManager`. It is exported both from
+the package root and as its own subpath:
 
 ```ts
 import limiterManager from 'better-queue/LimiterManager';
+// or
+import { limiterManager } from 'better-queue';
+```
+
+Both `better-queue` and `better-queue/LimiterManager` are valid import paths.
+
+### Side-by-side
+
+**Before — Bottleneck:**
+
+```ts
+import Bottleneck from 'bottleneck';
+
+const limiter = new Bottleneck({
+  id: 'guild-member-add',
+  maxConcurrent: 1,
+  reservoir: 10,
+  reservoirRefreshAmount: 10,
+  reservoirRefreshInterval: 10_000,
+  minTime: 1_000,
+  timeout: 3_600_000,
+});
+
+const result = await limiter.schedule({ id: 'job-123' }, async () => {
+  await doWork();
+});
+```
+
+**After — BetterQueue:**
+
+```ts
+import { WorkerPool } from 'better-queue';
+import limiterManager from 'better-queue/LimiterManager';
+
+await WorkerPool.create({ redis: { host: 'localhost', port: 6379 } });
 
 limiterManager.registerFeatureConfig('guild-member-add', {
   maxConcurrent: 1,
@@ -337,14 +1120,439 @@ limiterManager.registerFeatureConfig('guild-member-add', {
 });
 
 const limiter = limiterManager.getLimiter(guildId, 'guild-member-add');
-await limiter.schedule({ id: 'some-id' }, () => doWork());
+const result = await limiter.schedule({ id: 'job-123' }, async () => {
+  await doWork();
+});
 ```
 
-Both `better-queue` and `better-queue/LimiterManager` are valid import paths.
+The `LimiterWrapper.schedule()` accepts both `schedule(fn)` and
+`schedule(options, fn)`, exactly like Bottleneck.
+
+### Using `DistributedLimiter` directly
+
+If you are migrating code that uses `Bottleneck` instances rather than a
+manager, the migration is equally small:
+
+```ts
+// Before
+import Bottleneck from 'bottleneck';
+const limiter = new Bottleneck({ maxConcurrent: 2, minTime: 250 });
+await limiter.schedule(() => doWork());
+
+// After
+import { WorkerPool, DistributedLimiter } from 'better-queue';
+await WorkerPool.create({ redis: { host: 'localhost' } });
+const limiter = new DistributedLimiter({ id: 'my-queue', maxConcurrent: 2, minTime: 250 });
+await limiter.schedule(() => doWork());
+```
+
+The one thing you must add is the `id`, because in BetterQueue the `id` *is*
+the queue identity — there is no separate "cluster id".
+
+### Behavioural differences — read these
+
+Migrating is a one-import change, but the semantics are not identical. The
+differences, honestly:
+
+| Area | Bottleneck | BetterQueue |
+|---|---|---|
+| **Priority scope** | Local to a single limiter. Across a cluster, another limiter may run a lower-priority job first. | **Global across the whole shared queue** — the ordering is computed in one Redis ZSET. |
+| **Arrival order** | Only guaranteed per limiter; across a cluster a later job may run first. | **Global** — a server-side monotonic sequence breaks ties. |
+| **Queue durability** | In memory. Exiting the process loses the queue. | **In Redis.** The job *list* survives a restart — but the closure does not, so a recovered job must be re-submitted by your application. |
+| **Process restart** | In-flight closures are simply gone. | In-flight closures are gone too. Pending promises are rejected with `OrphanedJobError` when the pool stops. |
+| **Delayed jobs** | Not supported. | `scheduleAt` is supported. |
+| **Timeouts** | Native per-job `expiration`. | `timeout` in `FeatureConfig` is a client-side `Promise.race` in `LimiterWrapper`. `DistributedLimiter` has no per-job timeout; wrap your own function if you need one. |
+| **Weights** | `weight` consumes several reservoir tokens and several concurrency slots. | Not implemented. One job = one token = one slot. |
+| **Load shedding** | `highWater` + `strategy` (`LEAK`, `OVERFLOW`, `BLOCK`). | Not implemented. |
+| **Batching** | `Bottleneck.Batcher`. | Not implemented. |
+| **`Group` / `Cluster`** | `Group` manages many limiters; `Cluster` groups limiters across processes. | Not reimplemented as an API. The same effect is achieved by keying queues in Redis: one queue id per logical group. |
+| **`counts()`** | Full `RECEIVED`/`QUEUED`/`RUNNING`/`EXECUTING`/`DONE` counters. | `RECEIVED` and `DONE` are always `0`. `QUEUED`/`RUNNING`/`EXECUTING` are accurate. |
+| **`wrap()`, `submit()`** | Supported. | Not implemented. Use `schedule()`. |
+| **`chain()`** | Supported. | Not implemented. |
+| **Events** | `error`, `failed`, `retry`, `empty`, `idle`, `dropped`, `depleted`, `debug`, lifecycle events. | `executing`, `done`, `failed`, `retry`, `drained`. |
 
 > The Bottleneck `Group`/`Cluster` API is **not** reimplemented — BetterQueue
 > achieves the same effect by keying queues in Redis, which is a different
 > (and simpler) model.
+
+---
+
+## Lua scripts
+
+All critical operations are implemented as atomic Lua scripts to prevent race
+conditions. The scripts live in `scripts/` and are bundled into
+`src/lua-scripts.ts` at build time.
+
+| Script | Registered as | Purpose |
+|---|---|---|
+| `enqueue.lua` | `bqEnqueue` | Add a job to the ready/delayed set, compose the priority score server-side, and signal the owner pool. |
+| `dequeue.lua` | `bqDequeue` | Fetch the next eligible job owned by this pool (rate-limit-aware, lazy reservoir refresh/increase, promotes due delayed jobs). |
+| `complete.lua` | `bqComplete` | Release the running slot, delete the inflight entry, re-signal, and perform idle cleanup. |
+| `wakeup_check.lua` | `bqWakeupCheck` | Global ticker — wake queues whose delay expired. |
+| `recover.lua` | `bqRecover` | Re-enqueue orphaned crashed jobs. |
+| `stats.lua` | `bqStats` | Atomic stats snapshot (with lazy reservoir maintenance). |
+| `pool_heartbeat.lua` | `bqPoolHeartbeat` | Register/refresh this pool's liveness. |
+| `pool_unregister.lua` | `bqPoolUnregister` | Deregister a pool and delete its notification channel on shutdown. |
+
+They are registered with `ioredis.defineCommand`, so they are type-safe at
+the call site and run atomically inside Redis.
+
+---
+
+## Performance
+
+BetterQueue's design target is not "the highest possible throughput" — it is
+**predictable, flat resource usage** as the number of queues and processes
+grows. The following numbers were measured on this repository, against an
+**isolated Redis on port 6399**, using Node.js v20.20.0 and the built `dist/`
+bundle. Benchmarks 1–3 replicate `examples/benchmark.ts` exactly (same job
+counts, same limiter settings); Benchmark 4 is an additional idle-footprint
+measurement.
+
+```
+Benchmark 1 — Raw throughput (1 limiter, maxConcurrent: 100, no rate limits)
+  Jobs:        10,000
+  Time:        1292ms
+  Throughput:  7,740 jobs/sec
+  Heap before: 14.99 MB
+  Heap after:  84.87 MB
+  Heap delta:  69.88 MB
+
+Benchmark 2 — Memory stability (1,000 limiters x 50 jobs)
+  Heap after creating 1,000 limiters: 86.53 MB
+  Per-limiter cost: 1.69 KB
+  Total jobs:      50,000
+  Time:            4903ms
+  Throughput:      10,198 jobs/sec
+  Heap before:     84.88 MB
+  Heap after run:  345.63 MB
+  Heap after GC:   16.02 MB
+  Heap leak:       -68.86 MB
+
+Benchmark 3 — Rate-limited burst (500 limiters x 50 jobs, minTime: 100ms)
+  25,000 total
+  Time: 8813ms
+  Expected min: ~5000ms (minTime=100ms x 50 sequential jobs)
+  Heap: 110.31 MB
+
+Benchmark 4 — Idle footprint (10,000 limiters created, no jobs)
+  Heap delta:  12.60 MB
+  Per-limiter: 1321 bytes
+```
+
+**Read these numbers honestly.**
+
+- Throughput here is **~8–10k jobs/sec** for trivial jobs on a single local
+  Redis with 30 workers. Every job is a Redis round trip plus a Lua script
+  invocation; the Lua scripts are the cost centre. This is the price of
+  moving the queue into Redis: a single-process, in-memory limiter will
+  generally sustain a higher job rate, because BetterQueue trades local
+  throughput for a shared, inspectable, globally-ordered queue.
+- The heap **grows while jobs are in flight** (69 MB for 10k pending jobs)
+  and **returns to baseline after GC**. The `-68.86 MB` "heap leak" figure in
+  Benchmark 2 is the GC reclaiming the transient allocation — the steady-state
+  footprint is flat.
+- The per-limiter footprint measured is **~1.3–1.7 KB**. That figure includes
+  the `EventEmitter` machinery, the per-queue subscriber sets and the
+  resolved options object — it is the real cost, not a best case. It is still
+  small and — importantly — **flat**: 10 000 idle limiters cost 12.6 MB and,
+  crucially, **zero timers**.
+- The property that actually matters is the **timer count**, measured
+  directly by instrumenting `setInterval`:
+
+  ```
+  setInterval calls before pool:                 0
+  setInterval calls after WorkerPool.create:      2   (ticker + orphan sweeper)
+  setInterval calls after creating 500 limiters:  0
+  setInterval calls after running a job:          0
+  ```
+
+  Two timers per process, no matter whether you have one limiter or a
+  million. Bottleneck uses one `setInterval` per limiter
+  (`heartbeatInterval`, 250 ms local / 5000 ms clustered).
+
+Run the benchmark yourself with `npm run example:benchmark`. Note that
+`examples/benchmark.ts` points at `localhost:6379` by default — edit the port
+to `6399` (or another non-production instance) before running it.
+
+### Complexity
+
+| Operation | Complexity | Notes |
+|---|---|---|
+| `schedule()` | O(log n) | One Redis script: `HINCRBY` + `ZADD` + `LPUSH`. |
+| Dequeue | O(log n + w) | `w` = the bounded owner scan window (256 entries). |
+| Promote due delayed jobs | O(k log n) | `k` = number of jobs that just became due. |
+| `getStats()` | O(1) | Three cardinality reads plus the lazy reservoir check. |
+| Global tick | O(b) | `b` = wakeup batch size (100). |
+
+---
+
+## Known issues and limitations
+
+### Open bug — cross-process jobs can stall when the slot is held by another process
+
+**Status:** known, open, reproducible. Not fixed in this release.
+
+**Symptom.** When two processes share a queue id and the queue's concurrency
+slot is occupied by a job belonging to **another** process, the waiting
+process's job can sit in Redis for a long time — until an unrelated
+notification happens to poke the queue.
+
+**Reproduction** (two Node processes, same queue id, `maxConcurrent: 1`):
+
+1. Process A schedules a job that holds the slot for 2 seconds.
+2. Process B schedules a priority-1 job 900 ms later.
+3. Process A observes its own queue while B's job is pending:
+
+   ```
+   [a] t+2s  pending=1  running=0  wakeup=0
+   [a] t+4s  pending=1  running=0  wakeup=0
+   [a] t+6s  pending=1  running=0  wakeup=0
+   [a] t+8s  pending=1  running=0  wakeup=0
+   [a] t+10s pending=1  running=0  wakeup=0
+   ```
+
+4. B's job does not run. After manually `LPUSH`ing a notification onto the
+   pool's notify channel, it is released immediately:
+
+   ```
+   [a] poked notify channel of 997231-6d414398
+   [a] after poke: pending= 0 running= 0
+   ```
+
+5. B eventually resolves — it is a **stall, not a permanent loss**:
+
+   ```
+   [b] B-prio1 RAN after 10108 ms
+   [b] outcome: RESOLVED
+   ```
+
+**Root cause.** Two places conspire.
+
+`scripts/dequeue.lua` checks concurrency *before* it looks at whether the
+queue has any work this pool could run:
+
+```lua
+if maxConcurrent > 0 then
+  local running = tonumber(redis.call('SCARD', runningKey))
+  if running >= maxConcurrent then
+    return { 'concurrent_full', '', '0' }
+  end
+end
+```
+
+It returns status `concurrent_full` with `nextEligibleMs = '0'` — i.e. "no
+idea when to retry".
+
+`src/WorkerPool.ts` then only schedules a wakeup for three of the five
+dequeue statuses:
+
+```ts
+if (
+  (status === 'rate_limited' || status === 'empty' || status === 'blocked') &&
+  nextEligibleMs > 0
+) {
+  await this.scheduleWakeup(queueId, nextEligibleMs);
+}
+```
+
+`concurrent_full` is not in that list, and its `nextEligibleMs` is `0`
+anyway. So no wakeup is ever scheduled for this queue, and the job sits in
+the ready ZSET until some *other* event pushes a notification onto the
+pool's channel.
+
+The `blocked` status — which does carry a retry time (`now + 50`) and would
+have scheduled a wakeup — is only reached **after** the `concurrent_full`
+early-return, so it never fires for this case.
+
+**Impact.** Jobs in the affected queue wait indefinitely instead of for a
+bounded time. In the reproduction, a job that should have started as soon as
+the slot freed (t≈2 s) started at t≈10 s, when an unrelated notification
+arrived.
+
+**Workaround.** Until this is fixed:
+
+- Prefer **one process per queue id**. The bug only appears when the
+  concurrency slot is held by a different process.
+- Or use `maxConcurrent` large enough that a slot is essentially always
+  available, and rely on `minTime` plus the reservoir for pacing — the
+  reservoir and `minTime` paths *do* schedule wakeups correctly.
+- Or monitor `getQueueSize()` and nudge the queue if it stays non-zero.
+
+The recommended fix (not applied here) is to either give `concurrent_full` a
+sensible `nextEligibleMs` and include it in the wakeup-scheduling condition in
+`drainQueue()`, or to reorder `dequeue.lua` so the owner-aware candidate scan
+runs before the concurrency check and the `blocked` status (which already
+carries a retry time) is returned when the slot is held by another pool.
+
+### Other limitations
+
+- **Redis Cluster is not supported.** The Lua scripts operate on multiple keys
+  at once, and the key names do not contain a Redis Cluster hash tag, so
+  `CROSSSLOT` errors occur on a clustered deployment. This affects
+  Redis Cluster and ElastiCache in cluster mode. A single-node Redis (or a
+  Sentinel-managed primary) works fine. If you need Cluster support, the key
+  scheme would have to change to use a hash tag — for example an id of
+  `{tenant-42}:export` produces `bq:{tenant-42}:export:meta`, and every key
+  derived from the same id would then land on the same slot. Note that the
+  global keys (`bq:global:wakeup`, `bq:pools`) are shared across all queues
+  and would still need special handling.
+- **The reservoir interval is not aligned to a wall-clock schedule.** Because
+  refills are applied lazily on the next dequeue or stats read, a bucket can
+  refill slightly later than the exact interval boundary if the queue is
+  completely idle. Bottleneck has the same property in its local datastore.
+  A refresh is also computed from the moment the limiter was first used.
+- **`reservoirRefreshInterval` is not restricted to multiples of 250 ms.**
+  Bottleneck requires this because of its own heartbeat granularity; BetterQueue
+  computes refills from the Redis server clock, so any interval works.
+- **Job weights are not implemented.** One job consumes one token and one
+  concurrency slot.
+- **Load shedding strategies (`highWater`, `LEAK`, `OVERFLOW`, `BLOCK`) are
+  not implemented.**
+- **Batching is not implemented.**
+- **`Group`/`Cluster` are not reimplemented as APIs.**
+- **There is no per-job timeout on `DistributedLimiter`.** Use
+  `LimiterManager`'s `timeout`, or wrap your function.
+- **A lost Redis notification strands a job until the orphan sweeper runs.**
+  If the `BRPOP` notification is lost (Redis restart, network blip), the job
+  stays in Redis while its closure sits in `pendingJobs`. After
+  `pendingJobTimeoutMs` (5 minutes by default) the sweeper rejects the
+  promise with `OrphanedJobError` and the job is picked up again by crash
+  recovery.
+- **`pendingJobs` grows with the number of pending jobs.** That is by
+  design — the closures have to live somewhere — but a queue that accumulates
+  a large backlog will hold a large map.
+
+---
+
+## Troubleshooting
+
+### `WorkerPoolNotInitializedError: WorkerPool has not been started. Call WorkerPool.create() before creating limiters.`
+
+You constructed a `DistributedLimiter` before starting the pool. Call
+`await WorkerPool.create({ redis: {...} })` at startup, before creating any
+limiter.
+
+### `LimiterStoppedError: Limiter "..." has been stopped and is no longer accepting jobs.`
+
+You called `schedule()` after `limiter.stop()`. `stop()` is permanent for that
+instance — create a new limiter if you need to accept work again.
+
+### `JobMaxRetriesError: Job ... failed after N attempt(s): ...`
+
+The job threw and the retry budget was exhausted. The original error is on
+`err.cause` and its message is included in `err.message`. Raise `maxRetries`,
+set `retryOnFailure: false` to fail fast, or fix the underlying error.
+
+Retries use **exponential backoff**: 1 s, 2 s, 4 s, 8 s, capped at 30 s.
+
+### `OrphanedJobError: Job ... was evicted from the pending-jobs map without executing.`
+
+The Redis notification for this job was lost, or the pool was stopped while
+the job was pending. The job may still be in Redis. It is re-queued by crash
+recovery once it is older than `visibilityTimeoutMs`.
+
+### `Connection is closed.`
+
+You called `schedule()` after `await pool.stop()`. The pool's Redis
+connection is gone. Restart the pool before scheduling more work.
+
+### Jobs never run
+
+Check, in order:
+
+1. **Is the pool started?** `WorkerPool.getInstance()` throws if not.
+2. **Are you looking at the same queue id?** `bq:{id}:jobs` is the ready set.
+   `redis-cli ZCARD 'bq:your:id:jobs'` should be non-zero while jobs wait.
+3. **Is a reservoir empty?** `redis-cli GET 'bq:your:id:reservoir'`. If it is
+   `0`, jobs are waiting for a refill — and if no dequeue or stats read
+   happens, the refill is only applied lazily. Calling `getStats()` will
+   apply it.
+4. **Is `maxConcurrent` saturated?** `redis-cli SCARD 'bq:your:id:running'`.
+5. **Are the jobs in `delayed`?** `redis-cli ZRANGE 'bq:your:id:delayed' 0 -1
+   WITHSCORES`. A job there is not due yet.
+6. **Is the wakeup ZSET populated?** `redis-cli ZRANGE 'bq:global:wakeup' 0 -1
+   WITHSCORES`. If a queue is rate-limited there should be a member
+   `<poolId>|<queueId>`.
+7. **Is the pool alive?** `redis-cli ZRANGE 'bq:pools' 0 -1 WITHSCORES`. A
+   pool whose heartbeat is more than 30 s old is considered dead and is
+   removed from the registry.
+
+### `CROSSSLOT Keys in request don't hash to the same slot`
+
+You are running against **Redis Cluster** (or ElastiCache in cluster mode).
+BetterQueue's Lua scripts touch multiple keys at once and the key names carry
+no hash tag, so they cannot be routed to one slot. Use a single-node Redis or
+a Sentinel-managed primary instead. See
+[Other limitations](#other-limitations).
+
+### `NOPERM this user has no permissions to run the 'EVAL' command`
+
+Redis ACLs do not allow your user to run Lua scripts. BetterQueue needs
+`EVAL`/`EVALSHA`, plus read/write access to the `bq:*` keyspace. Grant
+something like:
+
+```
+ACL SETUSER app on >password ~bq:* +@all
+```
+
+(or a narrower set of commands: `+eval +evalsha +zadd +zrange +zcard +zrem
++zscore +hgetall +hset +hincrby +lpush +lrange +lrem +brpop +sadd +srem
++scard +get +set +del +expire +exists +incr +decr`).
+
+### `READONLY You can't write against a read only replica`
+
+Your Redis connection points at a replica. BetterQueue needs a writable
+primary.
+
+### `MOVED` / `ASK` errors
+
+Redis Cluster redirection. See the `CROSSSLOT` entry above — BetterQueue is
+not currently Cluster-compatible.
+
+### Connection refused / `ECONNREFUSED`
+
+Redis is not reachable at the host and port you gave `WorkerPool.create()`.
+Check `redis-cli -h <host> -p <port> ping`.
+
+### The queue is empty but jobs are still pending
+
+`queueSize` counts **ready + delayed** jobs. If `getQueueSize()` returns 0
+while you expect pending work, check `bq:{id}:delayed` — and remember that
+the idle-cleanup path deletes the volatile keys entirely once a queue drains,
+so "no keys at all" is the normal state for an idle queue.
+
+### Jobs run but the ordering looks wrong
+
+- Confirm `maxConcurrent` is what you think. With a large `maxConcurrent`,
+  jobs start immediately and priority has nothing to reorder.
+- Priority is clamped server-side to `0…99`. A priority of `0` is the
+  highest.
+- Within one priority band, ordering is FIFO by the server-side arrival
+  sequence.
+
+### Diagnosing with raw Redis
+
+```bash
+redis-cli ZRANGE 'bq:my-queue:jobs' 0 -1 WITHSCORES
+redis-cli ZRANGE 'bq:my-queue:delayed' 0 -1 WITHSCORES
+redis-cli SMEMBERS 'bq:my-queue:running'
+redis-cli HGETALL 'bq:my-queue:meta'
+redis-cli GET 'bq:my-queue:reservoir'
+redis-cli ZRANGE 'bq:global:wakeup' 0 -1 WITHSCORES
+redis-cli ZRANGE 'bq:pools' 0 -1 WITHSCORES
+redis-cli KEYS 'bq:workers:notify:*'
+```
+
+---
+
+## Requirements
+
+- **Node.js** ≥ 18
+- **Redis** ≥ 6 (single node, or a Sentinel-managed primary — **not** Redis Cluster)
+- **TypeScript** ≥ 5 if you use the bundled type definitions
+
+Runtime dependencies: `ioredis` and `lru-cache`. Nothing else.
 
 ---
 
@@ -354,24 +1562,63 @@ Both `better-queue` and `better-queue/LimiterManager` are valid import paths.
 npm test
 ```
 
-The suite runs against a real Redis instance (port `6399` by default — see
-`test/helpers.ts`) and covers basic scheduling, `maxConcurrent`, `minTime`,
-reservoir refresh, reservoir increase, `scheduleAt`, priority ordering,
-error + retry, stats and `drain()`.
+The suite runs against a **real Redis instance** — an isolated one on port
+`6399` by default (see `test/helpers.ts`). Port `6379` is production Redis
+and is never touched by the test suite.
+
+```bash
+npm test            # run once
+npm run test:watch  # watch mode
+npm run typecheck   # tsc --noEmit
+npm run build       # bundle lua scripts + build dist/
+```
+
+The 30 tests cover basic scheduling, `maxConcurrent`, `minTime`, reservoir
+refresh, reservoir increase (including `reservoirIncreaseMaximum`),
+`scheduleAt`, priority ordering and the stored score, error + retry
+behaviour, stats and `drain()`.
 
 ---
 
-## Performance
+## Contributing
 
-See `examples/benchmark.ts`. Expect:
+Contributions are welcome. A few things that will make yours easy to merge:
 
-- **~50k–100k jobs/sec** throughput with no rate limits (32 concurrent, fast fns)
-- **~50 bytes** JS heap per limiter instance
-- **Flat heap** over millions of jobs (no accumulation)
-- **1 timer** for any number of limiters
+1. **Open an issue first** for anything larger than a bug fix, so the design
+   can be discussed before the code is written.
+2. **Keep the Lua scripts and their TypeScript wrapper in sync.** The
+   canonical sources live in `scripts/*.lua`; `src/lua-scripts.ts` is
+   generated from them. After editing a script, run:
+
+   ```bash
+   npm run build:lua
+   ```
+
+   and commit the regenerated `src/lua-scripts.ts` alongside the `.lua`
+   change. `npm run build` does both steps.
+3. **Add a test.** The suite runs against a real Redis instance — start one on
+   port `6399` (see `test/helpers.ts`) and run `npm test`. Tests must not
+   touch port `6379`.
+4. **Keep the public API typed.** `DistributedLimiter` and `WorkerPool` carry
+   explicit `EventEmitter` overloads so `limiter.on(...)` is type-safe; add
+   overloads rather than loosening types.
+5. **Do not change the Redis key scheme casually.** Existing deployments have
+   live queues in Redis; a key rename is a breaking change and needs a
+   migration path.
+6. **Update `README.md` and `HOW_IT_WORKS.md` together.** The options tables
+   in the README are the reference for the API surface — if you add an option,
+   it needs a row, a type, a default and a description.
+
+Run the full check before opening a pull request:
+
+```bash
+npm run typecheck
+npm test
+npm run build
+```
 
 ---
 
 ## License
 
-MIT
+MIT © Saiop68
