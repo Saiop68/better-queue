@@ -101,10 +101,10 @@ priority 9  → score 9000000000003
 Two processes writing to the same queue id produce one ordering, not two.
 
 > **Caveat.** The ordering is genuinely global — the *scores* are computed
-> server-side and compared in one shared ZSET. But the *execution* of a job
-> whose concurrency slot is held by another process can stall. See
-> [Known issues and limitations](#known-issues-and-limitations) before
-> relying on multi-process concurrency.
+> server-side and compared in one shared ZSET. Execution is per-process, but
+> the concurrency slots are shared: a job waits until a slot frees up, even
+> when the slot is held by a job of another process. See
+> [Known issues and limitations](#known-issues-and-limitations).
 
 **2. One global ticker instead of N timers.**
 
@@ -552,9 +552,8 @@ So the two processes produce **one shared queue with one global ordering**,
 and each process runs only the jobs whose closures it holds.
 
 > **Read this before deploying multiple processes.** The coordination above
-> works, but there is a known bug where a job whose concurrency slot is held
-> by *another* process can stall until an unrelated notification arrives. It
-> is documented in full, with reproduction steps, in
+> works, and a job whose concurrency slot is held by *another* process is
+> re-notified as soon as that slot is released. The details are in
 > [Known issues and limitations](#known-issues-and-limitations).
 
 ---
@@ -1189,6 +1188,7 @@ conditions. The scripts live in `scripts/` and are bundled into
 | `dequeue.lua` | `bqDequeue` | Fetch the next eligible job owned by this pool (rate-limit-aware, lazy reservoir refresh/increase, promotes due delayed jobs). |
 | `complete.lua` | `bqComplete` | Release the running slot, delete the inflight entry, re-signal, and perform idle cleanup. |
 | `wakeup_check.lua` | `bqWakeupCheck` | Global ticker — wake queues whose delay expired. |
+| `wakeup_schedule.lua` | `bqWakeupSchedule` | Atomically schedule a worker wakeup, keeping the earliest one. |
 | `recover.lua` | `bqRecover` | Re-enqueue orphaned crashed jobs. |
 | `stats.lua` | `bqStats` | Atomic stats snapshot (with lazy reservoir maintenance). |
 | `pool_heartbeat.lua` | `bqPoolHeartbeat` | Register/refresh this pool's liveness. |
@@ -1289,101 +1289,36 @@ to `6399` (or another non-production instance) before running it.
 
 ## Known issues and limitations
 
-### Open bug — cross-process jobs can stall when the slot is held by another process
+### Fixed — cross-process jobs could stall when the slot was held by another process
 
-**Status:** known, open, reproducible. Not fixed in this release.
+**Status:** fixed. Previously this was an open, reproducible bug: when two
+processes shared a queue id and the concurrency slot was occupied by a job
+belonging to **another** process, the waiting job sat in Redis indefinitely
+until an unrelated notification happened to poke the queue.
 
-**Symptom.** When two processes share a queue id and the queue's concurrency
-slot is occupied by a job belonging to **another** process, the waiting
-process's job can sit in Redis for a long time — until an unrelated
-notification happens to poke the queue.
+**Why it happened.** `dequeue.lua` checked `maxConcurrent` *before* looking at
+whether the queue had any work this pool could run, and returned
+`concurrent_full` with `nextEligibleMs = '0'` ("no idea when to retry").
+`WorkerPool.drainQueue()` did not schedule a wakeup for that status, so the
+job was never re-notified.
 
-**Reproduction** (two Node processes, same queue id, `maxConcurrent: 1`):
+**How it was fixed.** `dequeue.lua` now scans for a job owned by the calling
+pool *first*, and only then applies the concurrency check to that specific
+job. When the slot is held by another process it returns
+`concurrent_full` with a real retry time (`now + 50` ms) and
+`WorkerPool.drainQueue()` schedules a wakeup for it, so the job is retried
+until the slot frees up. As a bonus, `complete.lua` now fans a notification
+out to the other live pools when a slot is released, so the waiting job
+usually starts on the very next tick rather than on the next poll.
 
-1. Process A schedules a job that holds the slot for 2 seconds.
-2. Process B schedules a priority-1 job 900 ms later.
-3. Process A observes its own queue while B's job is pending:
+`maxConcurrent` is still enforced globally across processes, and the
+single-process path is unchanged — when the slot is held by a job of the
+*same* pool, that pool is notified directly on completion and does not poll
+at all.
 
-   ```
-   [a] t+2s  pending=1  running=0  wakeup=0
-   [a] t+4s  pending=1  running=0  wakeup=0
-   [a] t+6s  pending=1  running=0  wakeup=0
-   [a] t+8s  pending=1  running=0  wakeup=0
-   [a] t+10s pending=1  running=0  wakeup=0
-   ```
-
-4. B's job does not run. After manually `LPUSH`ing a notification onto the
-   pool's notify channel, it is released immediately:
-
-   ```
-   [a] poked notify channel of 997231-6d414398
-   [a] after poke: pending= 0 running= 0
-   ```
-
-5. B eventually resolves — it is a **stall, not a permanent loss**:
-
-   ```
-   [b] B-prio1 RAN after 10108 ms
-   [b] outcome: RESOLVED
-   ```
-
-**Root cause.** Two places conspire.
-
-`scripts/dequeue.lua` checks concurrency *before* it looks at whether the
-queue has any work this pool could run:
-
-```lua
-if maxConcurrent > 0 then
-  local running = tonumber(redis.call('SCARD', runningKey))
-  if running >= maxConcurrent then
-    return { 'concurrent_full', '', '0' }
-  end
-end
-```
-
-It returns status `concurrent_full` with `nextEligibleMs = '0'` — i.e. "no
-idea when to retry".
-
-`src/WorkerPool.ts` then only schedules a wakeup for three of the five
-dequeue statuses:
-
-```ts
-if (
-  (status === 'rate_limited' || status === 'empty' || status === 'blocked') &&
-  nextEligibleMs > 0
-) {
-  await this.scheduleWakeup(queueId, nextEligibleMs);
-}
-```
-
-`concurrent_full` is not in that list, and its `nextEligibleMs` is `0`
-anyway. So no wakeup is ever scheduled for this queue, and the job sits in
-the ready ZSET until some *other* event pushes a notification onto the
-pool's channel.
-
-The `blocked` status — which does carry a retry time (`now + 50`) and would
-have scheduled a wakeup — is only reached **after** the `concurrent_full`
-early-return, so it never fires for this case.
-
-**Impact.** Jobs in the affected queue wait indefinitely instead of for a
-bounded time. In the reproduction, a job that should have started as soon as
-the slot freed (t≈2 s) started at t≈10 s, when an unrelated notification
-arrived.
-
-**Workaround.** Until this is fixed:
-
-- Prefer **one process per queue id**. The bug only appears when the
-  concurrency slot is held by a different process.
-- Or use `maxConcurrent` large enough that a slot is essentially always
-  available, and rely on `minTime` plus the reservoir for pacing — the
-  reservoir and `minTime` paths *do* schedule wakeups correctly.
-- Or monitor `getQueueSize()` and nudge the queue if it stays non-zero.
-
-The recommended fix (not applied here) is to either give `concurrent_full` a
-sensible `nextEligibleMs` and include it in the wakeup-scheduling condition in
-`drainQueue()`, or to reorder `dequeue.lua` so the owner-aware candidate scan
-runs before the concurrency check and the `blocked` status (which already
-carries a retry time) is returned when the slot is held by another pool.
+A regression test (`test/cross-process.test.ts`) spawns a real second Node
+process and asserts the waiting job starts within a bounded time after the
+slot is released.
 
 ### Other limitations
 
@@ -1573,10 +1508,15 @@ npm run typecheck   # tsc --noEmit
 npm run build       # bundle lua scripts + build dist/
 ```
 
-The 30 tests cover basic scheduling, `maxConcurrent`, `minTime`, reservoir
+The 34 tests cover basic scheduling, `maxConcurrent`, `minTime`, reservoir
 refresh, reservoir increase (including `reservoirIncreaseMaximum`),
 `scheduleAt`, priority ordering and the stored score, error + retry
 behaviour, stats and `drain()`.
+
+`test/cross-process.test.ts` spawns **real second Node processes** against
+the same isolated Redis and asserts that a job waiting on a concurrency slot
+held by another process starts as soon as the slot is released, and that the
+wakeup ZSET stays bounded.
 
 ---
 

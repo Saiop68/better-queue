@@ -208,6 +208,8 @@ export interface DequeueResult {
    * - `rate_limited`: when minTime / the reservoir allows the next job to run.
    * - `empty`: when the earliest *pending* (not-yet-due) job becomes eligible.
    * - `blocked`: the queue holds jobs owned by other processes; retry shortly.
+   * - `concurrent_full`: every concurrency slot is taken — possibly by a job
+   *   owned by another process; retry shortly.
    * - `0`: nothing pending — no retry needed.
    */
   readonly nextEligibleMs: number;

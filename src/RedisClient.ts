@@ -48,6 +48,13 @@ declare module 'ioredis' {
       queueId: string,
       ttl: string,
       ownerPoolId: string,
+      liveWindowMs: string,
+    ): Promise<number>;
+
+    bqWakeupSchedule(
+      wakeupKey: string,
+      member: string,
+      atMs: string,
     ): Promise<number>;
 
     bqWakeupCheck(
@@ -110,6 +117,11 @@ function registerCommands(redis: Redis): void {
   redis.defineCommand('bqComplete', {
     numberOfKeys: 8, // running, inflight, jobs, meta, lastRun, delayed, wakeup, pools
     lua: LUA.complete,
+  });
+
+  redis.defineCommand('bqWakeupSchedule', {
+    numberOfKeys: 1, // wakeup
+    lua: LUA.wakeupSchedule,
   });
 
   redis.defineCommand('bqWakeupCheck', {

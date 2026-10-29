@@ -78,17 +78,17 @@ Redis Lua scripts are **atomic**. While one runs, no other client can interfere.
 Called by a worker when it wakes up. It decides if a job is *allowed* to run.
 1. **Promotes due jobs**: moves any `delayed` job whose due time has passed into the ready set, atomically.
 2. **Reservoir maintenance**: lazily applies a refresh (reset) or an increase (add) if the interval has elapsed — no timer required.
-3. **Concurrency Check**: `SCARD running` → is it ≥ `maxConcurrent`? If yes, return `concurrent_full`.
-4. **MinTime Check**: `GET lastRun` → is `now - lastRun < minTime`? If yes, return `rate_limited` with the exact time the next job may run.
-5. **Reservoir Check**: are there tokens left? If 0, return `rate_limited` with the next token time.
-6. **Ownership**: scans the ready set for the first job **owned by this pool**. A job's function is a JS closure and only the scheduling process can run it.
+3. **Ownership**: scans the ready set for the first job **owned by this pool**. A job's function is a JS closure and only the scheduling process can run it.
+4. **Concurrency Check**: `SCARD running` → is it ≥ `maxConcurrent`? If yes, return `concurrent_full`. If every running job belongs to *this* pool, `nextEligibleMs` is `0` (this pool is notified on completion and does not need to poll); if any slot belongs to another process, `nextEligibleMs` is `now + 50` so the pool is woken up again shortly.
+5. **MinTime Check**: `GET lastRun` → is `now - lastRun < minTime`? If yes, return `rate_limited` with the exact time the next job may run.
+6. **Reservoir Check**: are there tokens left? If 0, return `rate_limited` with the next token time.
 7. **Execution**: if all checks pass — `ZREM` the job, `SADD` it to `running`, `HSET` it into `inflight`, update `lastRun`, and return the payload.
 
 #### `complete.lua` (The Cleanup Crew)
 Called when a worker finishes a job.
 1. `SREM` the job from the `running` SET.
 2. `HDEL` the job from the `inflight` HASH.
-3. If jobs remain → `LPUSH` a notification to the owning pool and refresh the TTLs.
+3. If jobs remain → `LPUSH` a notification to the owning pool and refresh the TTLs. On a concurrency-limited queue it also fans the notification out to the other live pools, so a job waiting on a slot held by *another* process starts as soon as the slot is released.
 4. If the queue is completely empty → immediately `DEL` the volatile keys (jobs, delayed, running, inflight, lastRun) and remove the wakeup entry. The `meta` key survives with its TTL so cold-starts stay cheap.
 
 #### `wakeup_check.lua`
@@ -113,48 +113,17 @@ Register/refresh a pool in the `bq:pools` registry (dropping pools that stopped 
 
 ## 5. Known Issues (Open Bugs)
 
-### 5.1 Cross-process jobs can stall when the concurrency slot is held by another process
+### 5.1 ~~Cross-process jobs can stall when the concurrency slot is held by another process~~ — FIXED
 
-**Status:** known, open, reproducible. **Not fixed** in the current release.
+**Status:** fixed.
 
-**Symptom.** When two processes share a queue `id` and the queue's concurrency
-slot is occupied by a job belonging to **another** process, the waiting
-process's job can sit in Redis for a long time — until an unrelated
-notification happens to poke the queue.
+**What the bug was.** When two processes shared a queue `id` and the
+concurrency slot was occupied by a job belonging to **another** process, the
+waiting process's job sat in Redis indefinitely — until an unrelated
+notification happened to poke the queue.
 
-**Reproduction** (two Node processes, same queue id, `maxConcurrent: 1`):
-
-1. Process A schedules a job that holds the slot for 2 seconds.
-2. Process B schedules a priority-1 job 900 ms later.
-3. Process A observes its own queue while B's job is pending:
-
-   ```
-   [a] t+2s  pending=1  running=0  wakeup=0
-   [a] t+4s  pending=1  running=0  wakeup=0
-   [a] t+6s  pending=1  running=0  wakeup=0
-   [a] t+8s  pending=1  running=0  wakeup=0
-   [a] t+10s pending=1  running=0  wakeup=0
-   ```
-
-4. B's job does not run. After manually `LPUSH`ing a notification onto the
-   pool's notify channel, it is released immediately:
-
-   ```
-   [a] poked notify channel of 997231-6d414398
-   [a] after poke: pending= 0 running= 0
-   ```
-
-5. B eventually resolves — it is a **stall, not a permanent loss**:
-
-   ```
-   [b] B-prio1 RAN after 10108 ms
-   [b] outcome: RESOLVED
-   ```
-
-**Root cause.** Two places conspire.
-
-`scripts/dequeue.lua` checks concurrency *before* it looks at whether the
-queue has any work this pool could run:
+**Why it happened.** `dequeue.lua` checked `maxConcurrent` *before* it looked
+at whether the queue had any work this pool could run:
 
 ```lua
 if maxConcurrent > 0 then
@@ -165,49 +134,42 @@ if maxConcurrent > 0 then
 end
 ```
 
-It returns status `concurrent_full` with `nextEligibleMs = '0'` — i.e. "no
-idea when to retry".
+It returned status `concurrent_full` with `nextEligibleMs = '0'` — i.e. "no
+idea when to retry". `src/WorkerPool.ts` then only scheduled a wakeup for
+three of the five dequeue statuses (`rate_limited`, `empty`, `blocked`), so
+`concurrent_full` never produced a wakeup and the job was never re-notified.
 
-`src/WorkerPool.ts` then only schedules a wakeup for three of the five
-dequeue statuses:
+**How it was fixed.** Two changes:
 
-```ts
-if (
-  (status === 'rate_limited' || status === 'empty' || status === 'blocked') &&
-  nextEligibleMs > 0
-) {
-  await this.scheduleWakeup(queueId, nextEligibleMs);
-}
-```
+1. **`dequeue.lua` reordered.** The owner-aware candidate scan (`ZRANGE` +
+   `firstOwned`) now runs *before* the concurrency check, so the check
+   applies to a job this pool is actually about to take. When every slot is
+   taken, the script inspects the running set:
 
-`concurrent_full` is not in that list, and its `nextEligibleMs` is `0`
-anyway. So no wakeup is ever scheduled for this queue, and the job sits in
-the ready ZSET until some *other* event pushes a notification onto the
-pool's channel.
+   - if **all** running jobs belong to *this* pool → `nextEligibleMs = 0`.
+     That pool is notified directly by `complete.lua` when the job finishes,
+     so it does not need to poll at all (the single-process path is
+     unchanged).
+   - if **any** slot belongs to *another* process → `nextEligibleMs =
+     now + 50`. The pool cannot know when the slot will be released, so it
+     asks to be woken up shortly.
 
-The `blocked` status — which does carry a retry time (`now + 50`) and would
-have scheduled a wakeup — is only reached **after** the `concurrent_full`
-early-return, so it never fires for this case.
+2. **`WorkerPool.drainQueue()` now schedules a wakeup for
+   `concurrent_full`** as well, so the retry time that `dequeue.lua` reports
+   is actually acted on.
 
-**Impact.** Jobs in the affected queue wait indefinitely instead of for a
-bounded time. In the reproduction, a job that should have started as soon as
-the slot freed (t≈2 s) started at t≈10 s, when an unrelated notification
-arrived.
+As a bonus, `complete.lua` now fans a notification out to the other live
+pools when a concurrency slot is released, so the waiting job usually starts
+on the very next tick rather than on the next poll.
 
-**Workaround until fixed:**
+The wakeup ZSET is keyed by `"<poolId>|<queueId>"` and scheduled through
+`wakeup_schedule.lua`, which keeps the *earliest* wakeup atomically. A queue
+therefore never holds more than one pending wakeup per pool — the ZSET stays
+bounded no matter how often a worker retries.
 
-- Prefer **one process per queue id** — the bug only appears when the
-  concurrency slot is held by a different process.
-- Or use a large enough `maxConcurrent` that a slot is essentially always
-  available, and rely on `minTime` plus the reservoir for pacing (those
-  paths *do* schedule wakeups correctly).
-- Or monitor `getQueueSize()` and nudge the queue if it stays non-zero.
-
-**Recommended fix (not applied here).** Either give `concurrent_full` a
-sensible `nextEligibleMs` and include it in the wakeup-scheduling condition in
-`drainQueue()`, or reorder `dequeue.lua` so the owner-aware candidate scan
-runs before the concurrency check and the `blocked` status (which already
-carries a retry time) is returned when the slot is held by another pool.
+`test/cross-process.test.ts` is the regression test: it spawns a real second
+Node process and asserts the waiting job starts within a bounded time after
+the slot is released.
 
 ### 5.2 Redis Cluster is not supported
 
@@ -241,7 +203,7 @@ queues and would still need special handling.
 **T=10ms (Worker B Wakes Up)**
 * Worker B pops the second "guild:123" notification.
 * Runs `dequeue.lua`. `running` is 1. `maxConcurrent` is 1.
-* **Denied.** The script returns `concurrent_full`.
+* **Denied.** The script returns `concurrent_full`. The running job belongs to this same pool, so `nextEligibleMs` is `0` — no wakeup is needed, because `complete.lua` will notify this pool directly when Job 1 finishes.
 * Worker B goes back to sleep. Job 2 stays in the Redis ZSET.
 
 **T=150ms (Job 1 Completes)**

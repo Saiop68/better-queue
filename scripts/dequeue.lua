@@ -36,12 +36,22 @@
       "empty"            — nothing of ours is pending
       "blocked"          — our jobs exist but are further down the queue;
                             nextEligibleMs = when to look again
-      "concurrent_full"  — maxConcurrent reached, nextEligibleMs = "0"
+      "concurrent_full"  — every concurrency slot is taken (possibly by a
+                            job owned by ANOTHER process) and we have a job
+                            ready to run; nextEligibleMs = when to retry
       "rate_limited"     — minTime or reservoir not ready, nextEligibleMs = when to retry
 --]]
 
 local PRIORITY_SCALE = 1000000000000
 local DEFAULT_SCAN_WINDOW = 256
+-- How long to wait before looking again when every concurrency slot is
+-- taken. We cannot know when the holder of the slot finishes, so this is a
+-- short poll — the same cadence the "blocked" status already uses.
+local CONCURRENCY_RETRY_MS = 50
+-- How many entries of the running SET to inspect when working out whether
+-- a concurrency slot is held by a job of this pool. Bounded so the check
+-- stays O(1)-ish on large queues.
+local MAX_OWNERSHIP_INSPECT = 32
 
 local jobsKey         = KEYS[1]
 local delayedKey      = KEYS[2]
@@ -77,6 +87,47 @@ local function firstOwned(candidates)
     end
   end
   return nil
+end
+
+-- Are ALL currently running jobs owned by the calling pool?
+--
+-- Used to tell two "the queue is full" situations apart:
+--   * all ours → every one of those jobs will notify this pool when it
+--                completes (complete.lua notifies the owner), so no polling
+--                is needed. This keeps the single-process path exactly as
+--                it was: no polling at all.
+--   * not all ours → at least one slot is held by ANOTHER process. We
+--                cannot know when it will be released, so we must poll.
+--
+-- The running SET holds at most `maxConcurrent` members and the script is
+-- atomic, so the scan is exact. SSCAN is used instead of SMEMBERS so the
+-- amount of data transferred stays bounded even for very large slots.
+--
+-- Any uncertainty (more entries than we are willing to inspect, or a
+-- missing inflight record) is resolved as "not all ours" — polling is
+-- always safe, it is only ever slightly more Redis traffic.
+local function runningAllOurs(runningKey, inflightKey)
+  local cursor = '0'
+  local checked = 0
+  repeat
+    local res = redis.call('SSCAN', runningKey, cursor, 'COUNT', 16)
+    cursor = res[1]
+    local members = res[2]
+    for i = 1, #members do
+      checked = checked + 1
+      if checked > MAX_OWNERSHIP_INSPECT then
+        return false
+      end
+      local runningPayload = redis.call('HGET', inflightKey, members[i])
+      if not runningPayload then
+        return false
+      end
+      if ownerOf(runningPayload) ~= ownerId then
+        return false
+      end
+    end
+  until cursor == '0'
+  return true
 end
 
 -- ── Load queue meta ──────────────────────────────────────────────────────────
@@ -165,14 +216,6 @@ if hasReservoir then
   if increaseInterval > 0 then redis.call('EXPIRE', lastIncreaseKey, ttl) end
 end
 
--- ── Check maxConcurrent ──────────────────────────────────────────────────────
-if maxConcurrent > 0 then
-  local running = tonumber(redis.call('SCARD', runningKey))
-  if running >= maxConcurrent then
-    return { 'concurrent_full', '', '0' }
-  end
-end
-
 -- ── Compute the earliest time a job could run ───────────────────────────────
 local readyAt = now
 
@@ -202,6 +245,32 @@ local candidates = redis.call('ZRANGE', jobsKey, 0, scanWindow - 1)
 local payload = firstOwned(candidates)
 
 if payload then
+  -- ── Concurrency check ──────────────────────────────────────────────────────
+  -- We only reach this point with a job of OURS that we are about to run, so
+  -- the check applies to the job this pool is actually taking — not to some
+  -- unrelated job that happens to occupy a slot.
+  if maxConcurrent > 0 then
+    local running = tonumber(redis.call('SCARD', runningKey))
+    if running >= maxConcurrent then
+      -- Every slot is taken. Find out whether ALL of them are held by jobs
+      -- of THIS pool:
+      --
+      --   * all ours  → when those jobs finish, complete.lua notifies this
+      --                 pool directly, so no wakeup is needed (nextEligibleMs
+      --                 = 0). This keeps the single-process path exactly as
+      --                 it was: no polling at all.
+      --   * not ours  → at least one slot belongs to ANOTHER process. We
+      --                 cannot know when it will be released, so ask to be
+      --                 woken up again shortly. Returning "no idea when to
+      --                 retry" here is what used to strand the job in Redis
+      --                 until an unrelated notification poked the queue.
+      if runningAllOurs(runningKey, inflightKey) then
+        return { 'concurrent_full', '', '0' }
+      end
+      return { 'concurrent_full', '', fmtScore(now + CONCURRENCY_RETRY_MS) }
+    end
+  end
+
   if readyAt > now then
     -- A ready job exists but minTime / reservoir says it cannot start yet.
     return { 'rate_limited', '', tostring(readyAt) }

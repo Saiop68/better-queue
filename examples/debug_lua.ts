@@ -71,7 +71,7 @@ async function main() {
       const done = await redis.bqComplete(
         KEYS.running('dbg'), KEYS.inflight('dbg'), KEYS.jobs('dbg'), KEYS.meta('dbg'),
         KEYS.lastRun('dbg'), KEYS.delayed('dbg'), KEYS.wakeup, KEYS.pools,
-        'job-abc-123', 'dbg', '3600', poolId,
+        'job-abc-123', 'dbg', '3600', poolId, '30000',
       );
       console.log('6. Complete result:', done);
     } else {

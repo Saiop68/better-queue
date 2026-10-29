@@ -21,6 +21,7 @@
   ARGV[2] = queueId             (string — for re-notification)
   ARGV[3] = ttl                 (seconds — key expiry window)
   ARGV[4] = ownerPoolId         (pool id of the process that owns the queue)
+  ARGV[5] = liveWindowMs        (how long a pool stays live without a beat)
 
   Returns: 1 if job was found and removed, 0 if job was not in running set
 --]]
@@ -38,6 +39,7 @@ local jobId   = ARGV[1]
 local queueId = ARGV[2]
 local ttl     = tonumber(ARGV[3])
 local ownerPoolId = ARGV[4]
+local liveWindowMs = tonumber(ARGV[5]) or 30000
 
 local removed = redis.call('SREM', runningKey, jobId)
 redis.call('HDEL', inflightKey, jobId)
@@ -51,6 +53,31 @@ if removed == 1 then
     if ownerPoolId then
       redis.call('LPUSH', 'bq:workers:notify:' .. ownerPoolId, queueId)
     end
+
+    -- A freed concurrency slot can unblock a job owned by a DIFFERENT
+    -- process. Notify every other live pool as well, so a job waiting on a
+    -- slot held elsewhere starts as soon as the slot is released instead of
+    -- waiting for the next poll tick. (Mirrors the fan-out in enqueue.lua.)
+    --
+    -- Only queues that are actually concurrency-limited do this — an
+    -- unlimited queue never has a waiter blocked on a slot, so it would
+    -- just be noise.
+    local maxConcurrent = tonumber(redis.call('HGET', metaKey, 'maxConcurrent') or '0')
+    if maxConcurrent > 0 then
+      local _time = redis.call('TIME')
+      local now  = tonumber(_time[1]) * 1000 + math.floor(tonumber(_time[2]) / 1000)
+      local livePools = redis.call(
+        'ZRANGEBYSCORE', poolsKey,
+        string.format('%.0f', now - liveWindowMs), '+inf'
+      )
+      for i = 1, #livePools do
+        local pid = livePools[i]
+        if (not ownerPoolId) or (pid ~= ownerPoolId) then
+          redis.call('LPUSH', 'bq:workers:notify:' .. pid, queueId)
+        end
+      end
+    end
+
     redis.call('EXPIRE', metaKey,  ttl)
     redis.call('EXPIRE', lastRunKey, ttl)
     redis.call('EXPIRE', runningKey, ttl)

@@ -103,9 +103,17 @@ class Worker {
       //                   nextEligibleMs is when it becomes eligible.
       // `blocked`      → the queue holds jobs owned by other processes; look
       //                   again shortly.
-      // All three need a wakeup, otherwise the job would sit in Redis forever.
+      // `concurrent_full` → every concurrency slot is taken — possibly by a job
+      //                   owned by ANOTHER process. We cannot know when that
+      //                   job finishes, so look again shortly.
+      // All four need a wakeup, otherwise the job would sit in Redis forever
+      // (this used to be the cross-process stall: `concurrent_full` reported
+      // nextEligibleMs = 0 and was never scheduled).
       if (
-        (status === 'rate_limited' || status === 'empty' || status === 'blocked') &&
+        (status === 'rate_limited' ||
+          status === 'empty' ||
+          status === 'blocked' ||
+          status === 'concurrent_full') &&
         nextEligibleMs > 0
       ) {
         // Schedule a wakeup — the ticker will re-notify workers at the right time
@@ -249,6 +257,7 @@ class Worker {
         queueId,
         String(this.pool.defaultTtl),
         this.pool.poolId,
+        String(POOL_LIVE_WINDOW_MS),
       );
     } catch {
       // Best-effort — not fatal
@@ -257,13 +266,22 @@ class Worker {
 
   private async scheduleWakeup(queueId: string, atMs: number): Promise<void> {
     try {
-      // ZADD bq:global:wakeup <atMs> <queueId>
-      // Keep the EARLIEST wakeup: if one is already scheduled for a later
-      // time, pull it in; if one is scheduled sooner, leave it alone.
-      const existing = await this.pool.commandClient.zscore(KEYS.wakeup, queueId);
-      if (existing === null || Number(existing) > atMs) {
-        await this.pool.commandClient.zadd(KEYS.wakeup, atMs, queueId);
-      }
+      // ZADD bq:global:wakeup <atMs> "<poolId>|<queueId>"
+      //
+      // The member is scoped to this pool, so a queue can never accumulate
+      // more than ONE pending wakeup per pool — the ZSET stays bounded no
+      // matter how often a worker retries. The script keeps the EARLIEST
+      // wakeup: if one is already scheduled for a later time, it is pulled
+      // in; if one is scheduled sooner, it is left alone.
+      //
+      // The whole read-modify-write happens inside Lua, so two concurrent
+      // wakeup requests for the same queue cannot race and push the earlier
+      // time out.
+      await this.pool.commandClient.bqWakeupSchedule(
+        KEYS.wakeup,
+        `${this.pool.poolId}|${queueId}`,
+        String(atMs),
+      );
     } catch {
       // Best-effort
     }

@@ -76,6 +76,7 @@ var LUA = {
   ARGV[2] = queueId             (string \u2014 for re-notification)
   ARGV[3] = ttl                 (seconds \u2014 key expiry window)
   ARGV[4] = ownerPoolId         (pool id of the process that owns the queue)
+  ARGV[5] = liveWindowMs        (how long a pool stays live without a beat)
 
   Returns: 1 if job was found and removed, 0 if job was not in running set
 --]]
@@ -93,6 +94,7 @@ local jobId   = ARGV[1]
 local queueId = ARGV[2]
 local ttl     = tonumber(ARGV[3])
 local ownerPoolId = ARGV[4]
+local liveWindowMs = tonumber(ARGV[5]) or 30000
 
 local removed = redis.call('SREM', runningKey, jobId)
 redis.call('HDEL', inflightKey, jobId)
@@ -106,6 +108,31 @@ if removed == 1 then
     if ownerPoolId then
       redis.call('LPUSH', 'bq:workers:notify:' .. ownerPoolId, queueId)
     end
+
+    -- A freed concurrency slot can unblock a job owned by a DIFFERENT
+    -- process. Notify every other live pool as well, so a job waiting on a
+    -- slot held elsewhere starts as soon as the slot is released instead of
+    -- waiting for the next poll tick. (Mirrors the fan-out in enqueue.lua.)
+    --
+    -- Only queues that are actually concurrency-limited do this \u2014 an
+    -- unlimited queue never has a waiter blocked on a slot, so it would
+    -- just be noise.
+    local maxConcurrent = tonumber(redis.call('HGET', metaKey, 'maxConcurrent') or '0')
+    if maxConcurrent > 0 then
+      local _time = redis.call('TIME')
+      local now  = tonumber(_time[1]) * 1000 + math.floor(tonumber(_time[2]) / 1000)
+      local livePools = redis.call(
+        'ZRANGEBYSCORE', poolsKey,
+        string.format('%.0f', now - liveWindowMs), '+inf'
+      )
+      for i = 1, #livePools do
+        local pid = livePools[i]
+        if (not ownerPoolId) or (pid ~= ownerPoolId) then
+          redis.call('LPUSH', 'bq:workers:notify:' .. pid, queueId)
+        end
+      end
+    end
+
     redis.call('EXPIRE', metaKey,  ttl)
     redis.call('EXPIRE', lastRunKey, ttl)
     redis.call('EXPIRE', runningKey, ttl)
@@ -171,12 +198,22 @@ return removed
       "empty"            \u2014 nothing of ours is pending
       "blocked"          \u2014 our jobs exist but are further down the queue;
                             nextEligibleMs = when to look again
-      "concurrent_full"  \u2014 maxConcurrent reached, nextEligibleMs = "0"
+      "concurrent_full"  \u2014 every concurrency slot is taken (possibly by a
+                            job owned by ANOTHER process) and we have a job
+                            ready to run; nextEligibleMs = when to retry
       "rate_limited"     \u2014 minTime or reservoir not ready, nextEligibleMs = when to retry
 --]]
 
 local PRIORITY_SCALE = 1000000000000
 local DEFAULT_SCAN_WINDOW = 256
+-- How long to wait before looking again when every concurrency slot is
+-- taken. We cannot know when the holder of the slot finishes, so this is a
+-- short poll \u2014 the same cadence the "blocked" status already uses.
+local CONCURRENCY_RETRY_MS = 50
+-- How many entries of the running SET to inspect when working out whether
+-- a concurrency slot is held by a job of this pool. Bounded so the check
+-- stays O(1)-ish on large queues.
+local MAX_OWNERSHIP_INSPECT = 32
 
 local jobsKey         = KEYS[1]
 local delayedKey      = KEYS[2]
@@ -212,6 +249,47 @@ local function firstOwned(candidates)
     end
   end
   return nil
+end
+
+-- Are ALL currently running jobs owned by the calling pool?
+--
+-- Used to tell two "the queue is full" situations apart:
+--   * all ours \u2192 every one of those jobs will notify this pool when it
+--                completes (complete.lua notifies the owner), so no polling
+--                is needed. This keeps the single-process path exactly as
+--                it was: no polling at all.
+--   * not all ours \u2192 at least one slot is held by ANOTHER process. We
+--                cannot know when it will be released, so we must poll.
+--
+-- The running SET holds at most \`maxConcurrent\` members and the script is
+-- atomic, so the scan is exact. SSCAN is used instead of SMEMBERS so the
+-- amount of data transferred stays bounded even for very large slots.
+--
+-- Any uncertainty (more entries than we are willing to inspect, or a
+-- missing inflight record) is resolved as "not all ours" \u2014 polling is
+-- always safe, it is only ever slightly more Redis traffic.
+local function runningAllOurs(runningKey, inflightKey)
+  local cursor = '0'
+  local checked = 0
+  repeat
+    local res = redis.call('SSCAN', runningKey, cursor, 'COUNT', 16)
+    cursor = res[1]
+    local members = res[2]
+    for i = 1, #members do
+      checked = checked + 1
+      if checked > MAX_OWNERSHIP_INSPECT then
+        return false
+      end
+      local runningPayload = redis.call('HGET', inflightKey, members[i])
+      if not runningPayload then
+        return false
+      end
+      if ownerOf(runningPayload) ~= ownerId then
+        return false
+      end
+    end
+  until cursor == '0'
+  return true
 end
 
 -- \u2500\u2500 Load queue meta \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -300,14 +378,6 @@ if hasReservoir then
   if increaseInterval > 0 then redis.call('EXPIRE', lastIncreaseKey, ttl) end
 end
 
--- \u2500\u2500 Check maxConcurrent \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-if maxConcurrent > 0 then
-  local running = tonumber(redis.call('SCARD', runningKey))
-  if running >= maxConcurrent then
-    return { 'concurrent_full', '', '0' }
-  end
-end
-
 -- \u2500\u2500 Compute the earliest time a job could run \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 local readyAt = now
 
@@ -337,6 +407,32 @@ local candidates = redis.call('ZRANGE', jobsKey, 0, scanWindow - 1)
 local payload = firstOwned(candidates)
 
 if payload then
+  -- \u2500\u2500 Concurrency check \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  -- We only reach this point with a job of OURS that we are about to run, so
+  -- the check applies to the job this pool is actually taking \u2014 not to some
+  -- unrelated job that happens to occupy a slot.
+  if maxConcurrent > 0 then
+    local running = tonumber(redis.call('SCARD', runningKey))
+    if running >= maxConcurrent then
+      -- Every slot is taken. Find out whether ALL of them are held by jobs
+      -- of THIS pool:
+      --
+      --   * all ours  \u2192 when those jobs finish, complete.lua notifies this
+      --                 pool directly, so no wakeup is needed (nextEligibleMs
+      --                 = 0). This keeps the single-process path exactly as
+      --                 it was: no polling at all.
+      --   * not ours  \u2192 at least one slot belongs to ANOTHER process. We
+      --                 cannot know when it will be released, so ask to be
+      --                 woken up again shortly. Returning "no idea when to
+      --                 retry" here is what used to strand the job in Redis
+      --                 until an unrelated notification poked the queue.
+      if runningAllOurs(runningKey, inflightKey) then
+        return { 'concurrent_full', '', '0' }
+      end
+      return { 'concurrent_full', '', fmtScore(now + CONCURRENCY_RETRY_MS) }
+    end
+  end
+
   if readyAt > now then
     -- A ready job exists but minTime / reservoir says it cannot start yet.
     return { 'rate_limited', '', tostring(readyAt) }
@@ -782,7 +878,7 @@ return {
   KEYS[1] = bq:global:wakeup    (ZSET \u2014 member \u2192 wakeup timestamp)
   KEYS[2] = bq:pools            (ZSET \u2014 live pool registry)
 
-  ARGV[1] = now                 (current time in ms)
+  ARGV[1] = now                 (ignored \u2014 the server clock is used instead)
   ARGV[2] = batchSize           (max queues to process per tick, e.g. "100")
   ARGV[3] = liveWindowMs        (how long a pool stays live without a beat)
 
@@ -792,12 +888,22 @@ return {
 local wakeupKey = KEYS[1]
 local poolsKey  = KEYS[2]
 
-local now       = ARGV[1]
 local batchSize = tonumber(ARGV[2]) or 100
 local liveWindowMs = tonumber(ARGV[3]) or 30000
 
+-- Use the Redis server clock as the authoritative "now".
+--
+-- Every wakeup score is written server-side (enqueue.lua, dequeue.lua), so
+-- comparing against the server clock keeps the two in the same time base.
+-- Using the client's clock here would let a client whose clock runs ahead
+-- of the server wake up immediately after scheduling, turning the retry
+-- interval into a hot loop.
+local _time = redis.call('TIME')
+local now   = tonumber(_time[1]) * 1000 + math.floor(tonumber(_time[2]) / 1000)
+local nowStr = string.format('%.0f', now)
+
 -- Fetch all wakeup entries whose time has come (up to batchSize)
-local entries = redis.call('ZRANGEBYSCORE', wakeupKey, '-inf', now, 'LIMIT', 0, batchSize)
+local entries = redis.call('ZRANGEBYSCORE', wakeupKey, '-inf', nowStr, 'LIMIT', 0, batchSize)
 
 if #entries == 0 then
   return 0
@@ -806,7 +912,7 @@ end
 -- Which pools are alive right now?
 local livePools = redis.call(
   'ZRANGEBYSCORE', poolsKey,
-  string.format('%.0f', tonumber(now) - liveWindowMs), '+inf'
+  string.format('%.0f', now - liveWindowMs), '+inf'
 )
 
 local function isLive(pid)
@@ -847,6 +953,50 @@ for _, member in ipairs(entries) do
 end
 
 return signalled
+`,
+  wakeupSchedule: `--[[
+  wakeup_schedule.lua \u2014 Atomically schedule a worker wakeup for a queue.
+
+  The wakeup ZSET is a global registry of "queues that need to be looked at
+  again later". A worker that could not run a job right now (rate limited,
+  delayed, blocked by another process, or out of concurrency slots) parks
+  the queue here so the global ticker wakes it up again at the right time.
+
+  Entries are keyed by "<poolId>|<queueId>" so the ticker can notify the
+  exact pool that asked for the wakeup \u2014 the pool that holds the job
+  closures. One member per (pool, queue) pair means a queue can never
+  accumulate more than a single pending wakeup.
+
+  This script keeps the EARLIEST wakeup: an existing entry that fires
+  sooner is never pushed back. Doing that atomically (inside Lua) avoids
+  the race where two concurrent wakeup requests for the same queue read a
+  stale score and one of them overwrites the other's earlier time \u2014 which
+  could delay a job that was ready to run.
+
+  KEYS[1] = bq:global:wakeup    (ZSET \u2014 member \u2192 wakeup timestamp in ms)
+
+  ARGV[1] = member              ("<poolId>|<queueId>")
+  ARGV[2] = atMs                (wakeup time in ms)
+
+  Returns: 1 if the entry was created or moved earlier, 0 if an earlier
+           entry was kept.
+--]]
+
+local wakeupKey = KEYS[1]
+local member    = ARGV[1]
+local atMs      = tonumber(ARGV[2])
+
+if (not member) or (not atMs) then
+  return 0
+end
+
+local current = redis.call('ZSCORE', wakeupKey, member)
+if (not current) or (tonumber(current) > atMs) then
+  redis.call('ZADD', wakeupKey, string.format('%.0f', atMs), member)
+  return 1
+end
+
+return 0
 `
 };
 
@@ -866,6 +1016,11 @@ function registerCommands(redis) {
     numberOfKeys: 8,
     // running, inflight, jobs, meta, lastRun, delayed, wakeup, pools
     lua: LUA.complete
+  });
+  redis.defineCommand("bqWakeupSchedule", {
+    numberOfKeys: 1,
+    // wakeup
+    lua: LUA.wakeupSchedule
   });
   redis.defineCommand("bqWakeupCheck", {
     numberOfKeys: 2,
@@ -1077,7 +1232,7 @@ var Worker = class {
         await this.executeJob(queueId, payload);
         continue;
       }
-      if ((status === "rate_limited" || status === "empty" || status === "blocked") && nextEligibleMs > 0) {
+      if ((status === "rate_limited" || status === "empty" || status === "blocked" || status === "concurrent_full") && nextEligibleMs > 0) {
         await this.scheduleWakeup(queueId, nextEligibleMs);
       }
       break;
@@ -1188,17 +1343,19 @@ var Worker = class {
         jobId,
         queueId,
         String(this.pool.defaultTtl),
-        this.pool.poolId
+        this.pool.poolId,
+        String(POOL_LIVE_WINDOW_MS)
       );
     } catch {
     }
   }
   async scheduleWakeup(queueId, atMs) {
     try {
-      const existing = await this.pool.commandClient.zscore(KEYS.wakeup, queueId);
-      if (existing === null || Number(existing) > atMs) {
-        await this.pool.commandClient.zadd(KEYS.wakeup, atMs, queueId);
-      }
+      await this.pool.commandClient.bqWakeupSchedule(
+        KEYS.wakeup,
+        `${this.pool.poolId}|${queueId}`,
+        String(atMs)
+      );
     } catch {
     }
   }
