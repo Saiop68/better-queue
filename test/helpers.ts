@@ -1,15 +1,23 @@
 /**
  * Shared test helpers.
  *
- * IMPORTANT: every test in this suite talks to the ISOLATED Redis instance on
- * port 6399. Port 6379 is production Redis and must never be touched.
+ * The suite talks to an ISOLATED Redis instance and must never touch a
+ * production one. The host/port come from the environment so CI can point
+ * at its service container:
+ *
+ *   REDIS_HOST  (default 127.0.0.1)
+ *   REDIS_PORT  (default 6399)
+ *
+ * The default port is 6399 rather than 6379 on purpose: on a developer machine
+ * 6379 is usually a real, important Redis. CI sets REDIS_PORT=6379 because its
+ * Redis is a throwaway service container.
  */
 import Redis from 'ioredis';
 import { WorkerPool } from '../src/index';
 
 export const TEST_REDIS = {
-  host: '127.0.0.1',
-  port: 6399,
+  host: process.env.REDIS_HOST || '127.0.0.1',
+  port: parseInt(process.env.REDIS_PORT || '6399', 10),
 } as const;
 
 /** Direct client for assertions/cleanup (not used by the library itself). */

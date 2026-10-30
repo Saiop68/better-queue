@@ -8,6 +8,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@destroyer777777%2Fbetterqueue.svg)](https://www.npmjs.com/package/@destroyer777777/betterqueue)
 [![npm downloads](https://img.shields.io/npm/dm/@destroyer777777%2Fbetterqueue.svg)](https://www.npmjs.com/package/@destroyer777777/betterqueue)
+[![CI](https://github.com/Saiop68/better-queue/actions/workflows/ci.yml/badge.svg)](https://github.com/Saiop68/better-queue/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](https://nodejs.org)
 [![typescript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
@@ -141,6 +142,10 @@ early, late, or never.
 ## Installation
 
 ```bash
+# npmjs.org — no token needed, this is the main channel
+npm install @destroyer777777/betterqueue ioredis
+
+# or GitHub Packages (requires a GitHub token with read:packages)
 npm install @destroyer777777/betterqueue ioredis
 ```
 
@@ -1570,6 +1575,15 @@ npm run build
 ```
 
 ---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). There are a few things we know are
+missing — a `node-redis` adapter, Redis Cluster support, a `reset()` method,
+sliding-window limiting, and job inspection — and those are listed there as
+good first contributions.
+
+Security issues: see [SECURITY.md](SECURITY.md).
 
 ## License
 

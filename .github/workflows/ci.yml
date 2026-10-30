@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: build, typecheck & test
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18.x', '20.x', '22.x']
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Lua scripts
+        run: npm run build:lua
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npx vitest run
+        env:
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: 6379
+
+  publish-check:
+    name: verify publishable tarball
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Pack
+        run: |
+          npm run build:lua
+          npm run build
+          npm pack --dry-run
+
+      - name: Verify the tarball contains the Lua scripts
+        # The worker scripts are read at runtime from the published package.
+        # If they are missing from the tarball the library breaks on install.
+        run: |
+          npm pack
+          tar -tzf better-queue-*.tgz | grep -q 'scripts/dequeue.lua'
+          tar -tzf better-queue-*.tgz | grep -q 'scripts/enqueue.lua'
+          echo "Lua scripts present in tarball"
