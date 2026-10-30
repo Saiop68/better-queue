@@ -1,0 +1,798 @@
+{
+  "kasper9n/starchart": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/routes/github.ts"
+    ]
+  },
+  "gi60wedo/claude_imapct_lab": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/ui/live/events.ts"
+    ]
+  },
+  "pythonsniffer/Cascade": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "frontend/src/lib/format.ts"
+    ]
+  },
+  "pawtograder/platform": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "supabase/functions/_shared/Redis.ts"
+    ]
+  },
+  "linhnguyen-gt/Routiform": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "open-sse/executors/antigravity/stream-collector.ts"
+    ]
+  },
+  "ChetanGorantla/jimmySimulation": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "frontend/src/lib/resultOverlay.ts"
+    ]
+  },
+  "ClemenceChee/AgentFlow": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "packages/dashboard/src/server.ts"
+    ]
+  },
+  "RagulRishwanth/ragul-rishwanth-portfolio": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/data/experience.ts"
+    ]
+  },
+  "marceltft/bitbucket-mcp": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/rate-limiter.ts"
+    ]
+  },
+  "GeorgeMcIntyre-Web/SimPilot": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/domain/workflowTypes.ts",
+      "src/features/dashboard/hooks/useBottleneckOverview.ts"
+    ]
+  },
+  "tyba-co/bottleneck": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/Bottleneck.ts"
+    ]
+  },
+  "shubhamtaywade82/dhanhq-sdk": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/client/HttpClient.ts"
+    ]
+  },
+  "perplext/coordinaitor": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/services/agent-capacity-manager.ts"
+    ]
+  },
+  "fedcal/Tech-MCP": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "servers/performance-profiler/src/services/profiler-store.ts"
+    ]
+  },
+  "quazfenton/serverLezz-identit1ies": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "shared/types.ts"
+    ]
+  },
+  "ehmpathy/declapract-typescript-ehmpathy": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/practices/bottleneck/bad-practices/bottleneck/package.json.declapract.ts"
+    ]
+  },
+  "8sdxcqrw5z-sketch/playmarket": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/lib/data/catalysts.ts"
+    ]
+  },
+  "servicemartinpmo-wq/martin-os": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "lib/engine/advisory.ts"
+    ]
+  },
+  "servicemartinpmo-wq/mpo-pilot": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/lib/engine/advisory.ts"
+    ]
+  },
+  "minhlongs/mekong-cli": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "packages/mekong-cli-core/src/kaizen/report.ts"
+    ]
+  },
+  "GauravOjha2/anomaly-detection-pipeline": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/lib/detection-engine.ts"
+    ]
+  },
+  "saisurya-2406/Net-Learn": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/data/curriculumData.ts"
+    ]
+  },
+  "Sherbeeny/telegraf-trafficker": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/telegraf-trafficker.ts"
+    ]
+  },
+  "justumid/scholify-web": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/lib/acca-study-apm-b.ts"
+    ]
+  },
+  "yuaone/yuan": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "packages/yuan-core/src/perf-optimizer.ts"
+    ]
+  },
+  "agenticlabsio/agentic-site": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/seed/data/case-studies.ts"
+    ]
+  },
+  "skenglord/Shady_Trader": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "backend/freqtrade/bridge.ts"
+    ]
+  },
+  "SCULT-INDIA/SCULT-TOOLS": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "lib/prompts/business-ops/prompts.ts"
+    ]
+  },
+  "NETWORK101/aicreatives": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "apps/api/src/routes/agents.ts"
+    ]
+  },
+  "ooples/token-optimizer-mcp": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/tools/advanced-caching/cache-optimizer.ts"
+    ]
+  },
+  "ysjprojects/leetbuild": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/data/problems/165-pt-lora/learn.ts"
+    ]
+  },
+  "radhevrishi/market-cockpit": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "frontend/src/app/api/v1/news/route.ts"
+    ]
+  },
+  "webagil-kevin/sophia": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "apps/backend/src/infrastructure/grpc/middleware/rateLimit.ts"
+    ]
+  },
+  "Qodarrz/FlowGov": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "backend/src/modules/bottleneck/gateways/bottleneck.gateway.ts"
+    ]
+  },
+  "11vated/Generative-Seed-Programming-GSPL-": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "packages/knowledge/src/self-improvement.ts"
+    ]
+  },
+  "davecortespe/Stress_Test_Pro": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/marketing/marketingContent.ts"
+    ]
+  },
+  "anietieakpan/kazuq": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "services/integrations-service/src/common/rate-limiter.service.ts"
+    ]
+  },
+  "MaCeeeee/TheArchitect": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "packages/client/src/components/simulation/comparisonUtils.ts"
+    ]
+  },
+  "querypie/corp-web-v2": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/components/pages/solutions/japan/aiCrewCopy.ts"
+    ]
+  },
+  "robertotorres1222-beep/verigrade-bookkeeping-platform": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "backend/src/services/bottleneckAnalysisService.ts"
+    ]
+  },
+  "ghuser29384/Website2": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/lib/opportunity-synthesis.ts"
+    ]
+  },
+  "Sabbirbracu/AgentiqBD": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "lib/blog/posts/how-we-build-ai-agents.ts"
+    ]
+  },
+  "tundraray/quantum-deal": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "libs/framework/src/notifications/notification.service.ts"
+    ]
+  },
+  "pRizz/free-the-world": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/lib/content/site.ts"
+    ]
+  },
+  "Gcwizz/nexus": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "modules/optimisation-engine/services/recommendation.service.ts"
+    ]
+  },
+  "kenjaku-dev/SpeedX": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "app/api/download/route.ts"
+    ]
+  },
+  "ianderrington/genai": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "scripts/generate-blog-covers.ts"
+    ]
+  },
+  "jamesrochabrun/XcodeTraceMCP": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "packages/core/src/analyzer/recommendation-engine.ts"
+    ]
+  },
+  "Manu5921/digital-agency-ai": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "agents/06-automation-agent/workflows/process-mining-discovery.ts"
+    ]
+  },
+  "sendgrid/sendgrid-nodejs": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "packages/contact-importer/src/importer.js"
+    ]
+  },
+  "GladysAssistant/Gladys": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "server/services/rtsp-camera/lib/sendCameraFileToGateway.js",
+      "server/lib/gateway/gateway.forwardDeviceStateToGoogleHome.js"
+    ]
+  },
+  "pownjs/pown": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "packages/request/lib/limiter.js",
+      "packages/connect/lib/scheduler.js"
+    ]
+  },
+  "mapbox/github-release-tools": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/octokit.js"
+    ]
+  },
+  "mergeability/mergeable": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "scheduler/index.js"
+    ]
+  },
+  "ConcourseOpen/DeFi-Pulse-Adapters": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "sdk/api.js"
+    ]
+  },
+  "NorthernMan54/homebridge-alexa": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/lib/alexaLocal.js"
+    ]
+  },
+  "dokkaner/teemii": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "server/src/agents/agent.anibrainai.js",
+      "server/src/agents/agent.goodreads.js",
+      "server/src/agents/agent.mal.js"
+    ]
+  },
+  "aws-amplify/amplify-cli": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "packages/amplify-provider-awscloudformation/src/aws-utils/aws-cfn.js"
+    ]
+  },
+  "milvus-io/milvus-docs": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "scripts/lib/larkTranslator.js",
+      "scripts/lib/larkImageDownloader.js"
+    ]
+  },
+  "findthemasks/findthemasks": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "functions/geocode.js"
+    ]
+  },
+  "milvus-io/web-content": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "v3.0.x/scripts/lib/larkTranslator.js",
+      "v2.6.x/scripts/lib/larkImageDownloader.js",
+      "scripts/lib/larkImageDownloader.js"
+    ]
+  },
+  "timdp/winston-aws-cloudwatch": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "lib/relay.js"
+    ]
+  },
+  "karthik947/NewCoinListingsBot": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "check.js"
+    ]
+  },
+  "DMarby/humblebundle-ebook-downloader": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "index.js"
+    ]
+  },
+  "sat-utils/sat-api": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "packages/api-lib/libs/ingest.js"
+    ]
+  },
+  "TheBeastLT/stremio-thepiratebay-plus": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "lib/tpb_api.js",
+      "addon.js"
+    ]
+  },
+  "codeforequity-at/botium-core": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/containers/BaseContainer.js"
+    ]
+  },
+  "scootykins/4webm": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "routes/enqueue.js"
+    ]
+  },
+  "akamai/edgeworkers-examples": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "edgekv/utils/edgekv-importer/index.js"
+    ]
+  },
+  "GladysAssistant/gladys-gateway": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "core/service/stat.js",
+      "core/service/analytics.js"
+    ]
+  },
+  "imxieyi/sticker_time_bot": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "index.js"
+    ]
+  },
+  "dylanon/gatsby-source-etsy": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "utils.js"
+    ]
+  },
+  "tomjaimz/rekordbox-spotify-sync": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "response.js"
+    ]
+  },
+  "Coderrob/pinata-ipfs-scripts-for-nft-projects": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/calculate-cids.js"
+    ]
+  },
+  "nice-registry/owner-profiles": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "script/build.js"
+    ]
+  },
+  "tnygaming/discord-bot": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "modules/OpenDotaClient.js"
+    ]
+  },
+  "CiscoDevNet/appd-101-sample-code": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "client.js"
+    ]
+  },
+  "taskcluster/taskcluster": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "services/github/src/github-auth.js"
+    ]
+  },
+  "ubc/node-canvas-api": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/internal/fetch.js",
+      "src/internal/fetchAll.js"
+    ]
+  },
+  "knightcrawler-stremio/knightcrawler": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/addon/src/addon.js",
+      "src/addon-jackett/src/addon.js"
+    ]
+  },
+  "RockinChaos/Shiru": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "common/modules/episodes.js",
+      "common/modules/anime/anime.js",
+      "common/modules/providers/anilist/anilist.js"
+    ]
+  },
+  "MetaFam/TheGame": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "hasura/seed-db.mjs"
+    ]
+  },
+  "openaq/openaq-fetch": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/adapters/au_vic.js",
+      "src/adapters/southkorea.js",
+      "src/adapters/japan.js"
+    ]
+  },
+  "playcanvas/playcanvas-sync": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/api-client.js"
+    ]
+  },
+  "naughty-doge/stremio-porn": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/adapters/BaseAdapter.js"
+    ]
+  },
+  "hackclub/slash-z": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "api/find-or-create-meeting.js",
+      "api/prisma.js"
+    ]
+  },
+  "duzhi5368/FKPolyTools": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/core/rate-limiter.js"
+    ]
+  },
+  "onfleet/node-onfleet": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "lib/Methods.js"
+    ]
+  },
+  "amzn/selling-partner-api-sdk": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "javascript/sdk/helper/SuperagentRateLimiter.mjs"
+    ]
+  },
+  "platerflow/PlaterFlow": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "lib/moonraker.js"
+    ]
+  },
+  "ElifPinarBalbal/Merdiven": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "bot_main/lib/axios.js"
+    ]
+  },
+  "guardian/olympics-data-2016": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "data/src/s3.js",
+      "data/src/metric.js",
+      "data/src/pa.js"
+    ]
+  },
+  "indiedao/level-protocol-website": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "util/api/ipfs.js",
+      "util/api/pinata.js"
+    ]
+  },
+  "hackclub/map": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "script/airtable.js",
+      "script/searchAddress.js"
+    ]
+  },
+  "RockinChaos/AniSchedule": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "utils/anime.js",
+      "utils/anilist.js"
+    ]
+  },
+  "eXist-db/xst": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "commands/get.js",
+      "commands/upload.js"
+    ]
+  },
+  "Kaishiyoku/erebos": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/App.jsx"
+    ]
+  },
+  "Kikobeats/top-crawler-agents": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "scripts/generate.mjs"
+    ]
+  },
+  "sharetribe/flex-integration-sdk-js": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/utils.js"
+    ]
+  },
+  "rooteco/tweetscape": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "scripts/shared.mjs",
+      "scripts/linear.mjs",
+      "scripts/rekt.mjs"
+    ]
+  },
+  "community-ban-list/Communitybanlist": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "scbl-lib/apis/steam.js"
+    ]
+  },
+  "apigee/devrel": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "tools/apigee-edge-to-x-migration-tool/src/gateway-clients/apigee-x/ApigeeXClient.js",
+      "tools/apigee-edge-to-x-migration-tool/src/gateway-clients/apigee-edge/ApigeeEdgeClient.js"
+    ]
+  },
+  "giranm/pd-live-react": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/util/pd-api-wrapper.js"
+    ]
+  },
+  "ayan4m1/screechr": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/ptero.js"
+    ]
+  },
+  "eXist-db/node-exist": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "spec/examples/exist-upload"
+    ]
+  },
+  "RadKod/sound-shift": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "server/rateLimiter.js"
+    ]
+  },
+  "spreadmastodonsite/spread-mastodon": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "src/pages/api/follow.js"
+    ]
+  },
+  "peterdsp/Magnetio": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "scraper/lib/httpClient.js"
+    ]
+  },
+  "GreedyApe420/AFUERA_X_BOT": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "lib/openaiClient.js"
+    ]
+  },
+  "ispb88/vintage-proxy": {
+    "stars": 0,
+    "pushed": "",
+    "paths": [
+      "app.js"
+    ]
+  }
+}
