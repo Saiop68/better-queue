@@ -554,4 +554,42 @@ describe('drain', () => {
     const limiter = new DistributedLimiter({ id: queueId('drain-empty'), maxConcurrent: 1 });
     await limiter.drain(5_000);
   });
+
+  // ── Backwards compatibility ─────────────────────────────────────────────
+  //
+  // v1.0.x shipped guild-flavoured method names. They still exist as
+  // deprecated aliases so existing call sites don't break, while the
+  // scope-flavoured names are the canonical ones.
+
+  describe('deprecated aliases', () => {
+    it('removeGuildLimiters still removes the limiters for a scope', async () => {
+      const { limiterManager } = await import('../src/index');
+
+      limiterManager.registerFeatureConfig('compat-feature', { maxConcurrent: 1 });
+      limiterManager.getLimiter('scope-compat', 'compat-feature');
+
+      const before = limiterManager.getStats().limiterCache.size;
+      limiterManager.removeGuildLimiters('scope-compat');
+      const after = limiterManager.getStats().limiterCache.size;
+
+      expect(after).toBeLessThanOrEqual(before);
+    });
+
+    it('drainGuild resolves like drainScope', async () => {
+      const { limiterManager } = await import('../src/index');
+
+      limiterManager.registerFeatureConfig('drain-compat', { maxConcurrent: 1 });
+      const limiter = limiterManager.getLimiter('scope-drain', 'drain-compat');
+
+      await limiter.schedule({ id: 'job-1' }, async () => 'done');
+      await expect(limiterManager.drainGuild('scope-drain', 'drain-compat')).resolves.toBeUndefined();
+    });
+
+    it('exposes the canonical scope-flavoured names', async () => {
+      const { limiterManager } = await import('../src/index');
+
+      expect(typeof limiterManager.removeScopeLimiters).toBe('function');
+      expect(typeof limiterManager.drainScope).toBe('function');
+    });
+  });
 });

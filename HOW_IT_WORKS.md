@@ -8,16 +8,16 @@ It solves two structural problems with Bottleneck at scale: **memory growth from
 
 ## 1. The Core Philosophy
 
-In a typical 10,000 guild bot with 40 features per guild, you might have **400,000 potential rate limiters**.
+In a typical 10,000-scope application with 40 features per scope, you might have **400,000 potential rate limiters**.
 
 *   **Bottleneck's approach:** 400,000 JS objects, each running a `setInterval` heartbeat every 250ms, storing waiting jobs as closures in RAM. Result: OOM crashes and uncollectable memory overhead.
-*   **BetterQueue's approach:** **zero per-limiter timers**. All queue state (waiting jobs, running counters, token buckets) lives in Redis. A single global "Worker Pool" pulls work using blocking Redis commands (`BRPOP`). If a guild is idle, its RAM and CPU footprint is exactly zero.
+*   **BetterQueue's approach:** **zero per-limiter timers**. All queue state (waiting jobs, running counters, token buckets) lives in Redis. A single global "Worker Pool" pulls work using blocking Redis commands (`BRPOP`). If a scope is idle, its RAM and CPU footprint is exactly zero.
 
 ---
 
 ## 2. Redis Key Structure (The Source of Truth)
 
-Each active queue (e.g., `guild_123`) has a unique `id`. In Redis, this expands into several keys.
+Each active queue (e.g., `scope_123`) has a unique `id`. In Redis, this expands into several keys.
 
 ### Volatile Runtime Keys (Deleted immediately when the queue empties)
 *   **`bq:{id}:jobs` (ZSET)**: Ready jobs. Score = `priority × 1e12 + arrivalSeq`.
@@ -187,21 +187,21 @@ queues and would still need special handling.
 
 ## 6. Day in the Life of a Rate-Limited Job
 
-**Scenario:** Guild 123 has `maxConcurrent: 1`, `minTime: 1000`. Two members join at the exact same time.
+**Scenario:** Scope 123 has `maxConcurrent: 1`, `minTime: 1000`. Two members join at the exact same time.
 
 **T=0ms (Member 1 & 2 Join)**
 * Your bot calls `.schedule()` twice.
-* `enqueue.lua` runs twice. Both jobs are parked in the `bq:guild:123:jobs` ZSET with priority-scored values.
+* `enqueue.lua` runs twice. Both jobs are parked in the `bq:scope:123:jobs` ZSET with priority-scored values.
 * Two notifications are pushed to this pool's channel `bq:workers:notify:<poolId>`.
 
 **T=5ms (Worker A Wakes Up)**
-* Worker A pops "guild:123" from its channel.
+* Worker A pops "scope:123" from its channel.
 * Runs `dequeue.lua`. `running` is 0. Job 1 is allowed.
 * Job 1 is moved to the `running` SET and `inflight` HASH.
 * Node.js starts executing Job 1's function.
 
 **T=10ms (Worker B Wakes Up)**
-* Worker B pops the second "guild:123" notification.
+* Worker B pops the second "scope:123" notification.
 * Runs `dequeue.lua`. `running` is 1. `maxConcurrent` is 1.
 * **Denied.** The script returns `concurrent_full`. The running job belongs to this same pool, so `nextEligibleMs` is `0` — no wakeup is needed, because `complete.lua` will notify this pool directly when Job 1 finishes.
 * Worker B goes back to sleep. Job 2 stays in the Redis ZSET.
@@ -217,14 +217,14 @@ queues and would still need special handling.
 * **Denied.** The script returns `rate_limited` and the exact time Job 2 *should* run: T=1005ms.
 
 **T=160ms (Worker parks the queue)**
-* The worker schedules a wakeup: `zadd bq:global:wakeup 1005 <poolId>|guild:123`.
+* The worker schedules a wakeup: `zadd bq:global:wakeup 1005 <poolId>|scope:123`.
 
 **T=1000ms (The Ticker)**
 * The 50ms ticker checks `bq:global:wakeup`. 1000 >= 1005? No. Nothing happens.
 
 **T=1050ms (The Ticker)**
 * Ticker checks. 1050 >= 1005? Yes!
-* `wakeup_check.lua` pulls the entry out and pushes "guild:123" onto the owning pool's channel.
+* `wakeup_check.lua` pulls the entry out and pushes "scope:123" onto the owning pool's channel.
 
 **T=1055ms (Worker Wakes Up)**
 * Runs `dequeue.lua`. Concurrency is 0. Time since `lastRun` is > 1000ms.

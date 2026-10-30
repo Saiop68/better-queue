@@ -1,8 +1,8 @@
 /**
- * examples/guild-member-add.ts
+ * examples/scope-member-add.ts
  *
- * Realistic simulation of GuildMemberAddQueue using BetterQueue's LimiterManager.
- * The code structure mirrors the real bot handler 1:1 — only imports changed.
+ * Realistic simulation of a per-scope member-add queue using BetterQueue's LimiterManager.
+ * The code structure mirrors a typical production handler 1:1 — only imports changed.
  *
  * MIGRATION from Bottleneck:
  *   Before:  import limiterManager from '../../Structures/LimiterManager.js';
@@ -11,18 +11,18 @@
  * Everything else — registerFeatureConfig, getLimiter, schedule({ id }, fn) — stays identical.
  *
  * Run (with GC exposure):
- *   node --expose-gc -r ts-node/register --project tsconfig.dev.json examples/guild-member-add.ts
+ *   node --expose-gc -r ts-node/register --project tsconfig.dev.json examples/scope-member-add.ts
  *   OR:
- *   npx ts-node --project tsconfig.dev.json --node-flags --expose-gc examples/guild-member-add.ts
+ *   npx ts-node --project tsconfig.dev.json --node-flags --expose-gc examples/scope-member-add.ts
  */
 
 import { PerformanceObserver, performance } from 'node:perf_hooks';
 import { WorkerPool, limiterManager } from '../src';
 
-// ── Simulated Discord.js types ────────────────────────────────────────────
+// ── Simulated domain types ───────────────────────────────────────────────
 
 interface Role   { id: string; name: string; position: number; }
-interface Member { id: string; username: string; bot: boolean; guildId: string; }
+interface Member { id: string; username: string; bot: boolean; scopeId: string; }
 
 // ── Memory + GC Profiler ──────────────────────────────────────────────────
 
@@ -193,20 +193,20 @@ class MemProfiler {
 
 // ── Simulated DB configs ───────────────────────────────────────────────────
 
-function fakeAutorole(guildId: string) {
-  return { guildId, roles: { humans: ['role-member'], bots: ['role-bot'] } };
+function fakeAutorole(scopeId: string) {
+  return { scopeId, roles: { humans: ['role-member'], bots: ['role-bot'] } };
 }
 
-function fakeWelcomeConfig(guildId: string) {
-  return { guildId, presets: [{ channelId: 'ch-welcome', type: 'text', message: 'Welcome {username}!' }] };
+function fakeWelcomeConfig(scopeId: string) {
+  return { scopeId, presets: [{ channelId: 'ch-welcome', type: 'text', message: 'Welcome {username}!' }] };
 }
 
-// ── GuildMemberAddQueue (your exact pattern) ─────────────────────────────
+// ── ScopeMemberAddQueue (your exact pattern) ─────────────────────────────
 
-class GuildMemberAddQueue {
+class ScopeMemberAddQueue {
   constructor() {
     // ← This is the ONLY line that changed from Bottleneck
-    limiterManager.registerFeatureConfig('guild-member-add', {
+    limiterManager.registerFeatureConfig('scope-member-add', {
       maxConcurrent: 100,
       reservoir: 10000,
       reservoirRefreshAmount: 10000,
@@ -217,29 +217,29 @@ class GuildMemberAddQueue {
     });
   }
 
-  addToQueue(guildId: string, member: Member): void {
+  addToQueue(scopeId: string, member: Member): void {
     // Exact same pattern as your bot:
-    const limiter = limiterManager.getLimiter(guildId, 'guild-member-add');
-    const uniqueId = `${guildId}-${member.id}-${Date.now()}`;
+    const limiter = limiterManager.getLimiter(scopeId, 'scope-member-add');
+    const uniqueId = `${scopeId}-${member.id}-${Date.now()}`;
 
     limiter.schedule({ id: uniqueId }, async () => {
       try {
         // — Autorole —
-        const autorole = fakeAutorole(guildId);
+        const autorole = fakeAutorole(scopeId);
         const type = member.bot ? 'bots' : 'humans';
         const roleIds = autorole.roles[type] ?? [];
-        console.log(`  [${guildId}] Assigning roles to ${member.username}: [${roleIds.join(', ')}]`);
-        await new Promise(r => setTimeout(r, 20)); // simulate Discord API call
+        console.log(`  [${scopeId}] Assigning roles to ${member.username}: [${roleIds.join(', ')}]`);
+        await new Promise(r => setTimeout(r, 20)); // simulate a slow API call
 
         // — Welcome message —
-        const welcome = fakeWelcomeConfig(guildId);
+        const welcome = fakeWelcomeConfig(scopeId);
         for (const preset of welcome.presets) {
           const msg = preset.message.replace('{username}', member.username);
-          console.log(`  [${guildId}] Sending welcome to #${preset.channelId}: "${msg}"`);
+          console.log(`  [${scopeId}] Sending welcome to #${preset.channelId}: "${msg}"`);
           await new Promise(r => setTimeout(r, 10));
         }
       } catch (err) {
-        console.error(`  [${guildId}] Error in GuildMemberAdd for ${member.username}:`, err);
+        console.error(`  [${scopeId}] Error in ScopeMemberAdd for ${member.username}:`, err);
       }
     }).catch(() => { /* limiter stopped / timed out — safe to ignore */ });
   }
@@ -252,7 +252,7 @@ async function main() {
   mem.start();
   mem.snap('process start');
 
-  console.log('🤖 GuildMemberAddQueue — BetterQueue LimiterManager demo\n');
+  console.log('🤖 ScopeMemberAddQueue — BetterQueue LimiterManager demo\n');
 
   await WorkerPool.create({
     redis: { host: '127.0.0.1', port: 6379 },
@@ -262,28 +262,28 @@ async function main() {
 
   mem.snap('pool ready (100 workers)');
 
-  const queue = new GuildMemberAddQueue();
+  const queue = new ScopeMemberAddQueue();
 
-  const GUILDS = ['guild_a'];
+  const SCOPES = ['scope_a'];
   const MEMBERS = 100;
 
-  console.log(`Simulating ${GUILDS.length} guilds × ${MEMBERS} joins each...\n`);
+  console.log(`Simulating ${SCOPES.length} scopes × ${MEMBERS} joins each...\n`);
 
   const start = Date.now();
 
-  // Simulate members joining each guild concurrently
-  const done = GUILDS.flatMap((guildId, gi) =>
+  // Simulate members joining each scope concurrently
+  const done = SCOPES.flatMap((scopeId, si) =>
     Array.from({ length: MEMBERS }, (_, mi) => {
       const member: Member = {
         id:       `user-${gi}-${mi}`,
         username: `Player${gi}${mi}`,
         bot:      mi === 2, // every third join is a bot
-        guildId,
+        scopeId,
       };
 
       return new Promise<void>((resolve) => {
         setTimeout(() => {
-          queue.addToQueue(guildId, member);
+          queue.addToQueue(scopeId, member);
           resolve();
         }, gi * 50);
       });
@@ -291,18 +291,18 @@ async function main() {
   );
 
   await Promise.all(done);
-  mem.snap(`all ${GUILDS.length * MEMBERS} jobs enqueued`);
+  mem.snap(`all ${SCOPES.length * MEMBERS} jobs enqueued`);
 
-  // Wait for all queues to drain (all Discord API calls finished)
+  // Wait for all queues to drain (all API calls finished)
   console.log('\nWaiting for all queues to drain...');
 
-  const drains = GUILDS.map(guildId =>
-    limiterManager.drainGuild(guildId, 'guild-member-add')
+  const drains = SCOPES.map(scopeId =>
+    limiterManager.drainScope(scopeId, 'scope-member-add')
   );
   await Promise.all(drains);
 
   const elapsed = Date.now() - start;
-  console.log(`\n✅ All ${GUILDS.length * MEMBERS} member joins processed in ${elapsed}ms`);
+  console.log(`\n✅ All ${SCOPES.length * MEMBERS} member joins processed in ${elapsed}ms`);
 
   mem.snap('all queues drained');
   mem.manualGc('post-drain');          // forces a GC cycle if --expose-gc is set

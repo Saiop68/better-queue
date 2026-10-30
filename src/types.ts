@@ -5,7 +5,7 @@ import type { RedisOptions } from 'ioredis';
 /** Options for creating a DistributedLimiter instance. */
 export interface LimiterOptions {
   /**
-   * Unique identifier for this queue (e.g. Discord guild ID).
+   * Unique identifier for this queue (e.g. a tenant or shard ID).
    * Used as the Redis key namespace: `bq:{id}:*`.
    */
   readonly id: string;

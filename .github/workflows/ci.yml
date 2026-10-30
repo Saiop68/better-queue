@@ -83,6 +83,17 @@ jobs:
         # If they are missing from the tarball the library breaks on install.
         run: |
           npm pack
-          tar -tzf better-queue-*.tgz | grep -q 'scripts/dequeue.lua'
-          tar -tzf better-queue-*.tgz | grep -q 'scripts/enqueue.lua'
+          # npm strips the scope from the tarball name, so match on *.tgz
+          TARBALL=$(ls -1 *.tgz | head -1)
+          echo "Tarball: $TARBALL"
+          tar -tzf "$TARBALL" | grep -q 'scripts/dequeue.lua'
+          tar -tzf "$TARBALL" | grep -q 'scripts/enqueue.lua'
+          tar -tzf "$TARBALL" | grep -q 'scripts/complete.lua'
           echo "Lua scripts present in tarball"
+
+      - name: Upload the tarball as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: "*.tgz"
+          if-no-files-found: error

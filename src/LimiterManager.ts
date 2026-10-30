@@ -7,7 +7,7 @@
  * to change the import path in your bot. No other code changes required.
  *
  * Internals use BetterQueue (Redis-backed, zero per-limiter timers) instead of
- * Bottleneck, which eliminates memory leaks and per-guild setInterval overhead.
+ * Bottleneck, which eliminates memory leaks and per-queue setInterval overhead.
  *
  * @example
  * // In your bot — just change this one line:
@@ -23,11 +23,11 @@ import type { LimiterOptions } from './types';
 // ── Feature config type ────────────────────────────────────────────────────
 
 /**
- * Rate limit configuration for a specific feature (e.g. 'guild-member-add').
+ * Rate limit configuration for a specific feature (e.g. 'member-add').
  * Mirrors Bottleneck.ConstructorOptions for compatibility.
  */
 export interface FeatureConfig {
-  /** Max concurrent jobs executing at once (per guild queue). */
+  /** Max concurrent jobs executing at once (per queue). */
   maxConcurrent?: number;
   /** Token bucket size — max burst. -1 or undefined = unlimited. */
   reservoir?: number;
@@ -188,7 +188,7 @@ export class LimiterWrapper {
     return this._limiter;
   }
 
-  /** Wait until this guild's queue is fully drained (all jobs done). */
+  /** Wait until this queue is fully drained (all jobs done). */
   drain(): Promise<void> {
     return this._limiter.drain();
   }
@@ -202,21 +202,21 @@ export class LimiterWrapper {
 // ── LimiterManager ─────────────────────────────────────────────────────────
 
 /**
- * LimiterManager — singleton that owns all guild×feature rate limiters.
+ * LimiterManager — singleton that owns all scope×feature rate limiters.
  *
  * Replaces the original Bottleneck-based version with BetterQueue:
  *   • Zero per-limiter timers (one global ticker for the whole process)
  *   • All queue state in Redis — limiters are tiny JS objects (~50 bytes)
- *   • Handles 100k+ concurrent guild queues without memory growth
+ *   • Handles 100k+ concurrent queues without memory growth
  *   • Limiters are created lazily and cached in an LRU
  */
 export class LimiterManager {
   private static _instance: LimiterManager;
 
   /**
-   * Guild×feature limiter cache.
-   * Key: `${guildId}::${feature}`
-   * Large max to avoid evicting active guild limiters.
+   * Scope×feature limiter cache.
+   * Key: `${scopeId}::${feature}`
+   * Large max to avoid evicting active limiters that are still in use.
    */
   private readonly _limiterCache: LRUCache<string, LimiterWrapper>;
 
@@ -228,7 +228,7 @@ export class LimiterManager {
   private constructor() {
     this._limiterCache = new LRUCache<string, LimiterWrapper>({
       max: 10_000,
-      // 10 min TTL — well beyond any in-flight Discord API call
+      // 10 min TTL — well beyond any in-flight job
       ttl: 1_000 * 60 * 10,
       ttlAutopurge: true,
       // CRITICAL: call stop() on every eviction (TTL expiry, LRU displacement, or
@@ -258,7 +258,7 @@ export class LimiterManager {
    * Call once at startup (e.g. in the queue class constructor).
    *
    * @example
-   * limiterManager.registerFeatureConfig('guild-member-add', {
+   * limiterManager.registerFeatureConfig('member-add', {
    *   maxConcurrent: 1,
    *   reservoir: 10,
    *   reservoirRefreshAmount: 10,
@@ -272,14 +272,14 @@ export class LimiterManager {
   }
 
   /**
-   * Get (or lazily create) a per-guild, per-feature rate limiter.
+   * Get (or lazily create) a per-scope, per-feature rate limiter.
    *
    * @example
-   * const limiter = limiterManager.getLimiter(guildId, 'guild-member-add');
-   * await limiter.schedule({ id: `${guildId}-${memberId}` }, () => doWork());
+   * const limiter = limiterManager.getLimiter(scopeId, 'member-add');
+   * await limiter.schedule({ id: `${scopeId}-${itemId}` }, () => doWork());
    */
-  getLimiter(guildId: string, feature: string): LimiterWrapper {
-    const key = `${guildId}::${feature}`;
+  getLimiter(scopeId: string, feature: string): LimiterWrapper {
+    const key = `${scopeId}::${feature}`;
     const cached = this._limiterCache.get(key);
     if (cached) return cached;
 
@@ -291,7 +291,7 @@ export class LimiterManager {
       cfg.reservoir !== undefined && cfg.reservoir > 0 ? cfg.reservoir : -1;
 
     const opts: LimiterOptions = {
-      id:                       `bq:${feature}:${guildId}`,
+      id:                       `bq:${feature}:${scopeId}`,
       maxConcurrent:            cfg.maxConcurrent            ?? DEFAULT_CONFIG.maxConcurrent,
       minTime:                  cfg.minTime                   ?? DEFAULT_CONFIG.minTime,
       reservoir:                reservoirValue,
@@ -314,37 +314,36 @@ export class LimiterManager {
   }
 
   /**
-   * Remove a single guild+feature limiter from the cache.
+   * Remove a single scope+feature limiter from the cache.
    * The limiter is stopped immediately, freeing its event listeners.
    *
    * Previously a no-op because the method did not exist — NightmodeQueue was
    * already trying to call this. Now it works.
    *
    * @example
-   * // In guildDelete or per-feature cleanup:
-   * limiterManager.removeLimiter(guildId, 'nightmode-scheduler');
+   * // On scope deletion or per-feature cleanup:
+   * limiterManager.removeLimiter(scopeId, 'nightmode-scheduler');
    */
-  removeLimiter(guildId: string, feature: string): void {
-    const key = `${guildId}::${feature}`;
+  removeLimiter(scopeId: string, feature: string): void {
+    const key = `${scopeId}::${feature}`;
     // LRU dispose callback calls wrapper.stop() automatically on delete
     this._limiterCache.delete(key);
   }
 
   /**
-   * Remove ALL limiters for a specific guild and stop them immediately.
-   * Call this from the `guildDelete` Discord event to free memory for
-   * guilds that have left — their limiters would otherwise sit in the LRU
-   * for up to 10 minutes.
+   * Remove ALL limiters for a specific scope and stop them immediately.
+   * Call this when a scope goes away to free memory — its limiters would
+   * otherwise sit in the LRU for up to 10 minutes.
    *
    * @example
-   * client.on('guildDelete', (guild) => {
-   *   limiterManager.removeGuildLimiters(guild.id);
+   * client.on('scopeDeleted', (scope) => {
+   *   limiterManager.removeScopeLimiters(scope.id);
    * });
    */
-  removeGuildLimiters(guildId: string): void {
-    const prefix = `${guildId}::`;
+  removeScopeLimiters(scopeId: string): void {
+    const prefix = `${scopeId}::`;
     // LRUCache doesn't support prefix queries, so we collect keys to delete.
-    // This is O(n) but only fires on guildDelete — an infrequent event.
+    // This is O(n) but only fires when a scope goes away — an infrequent event.
     const toDelete: string[] = [];
     for (const key of this._limiterCache.keys()) {
       if (key.startsWith(prefix)) toDelete.push(key);
@@ -431,12 +430,29 @@ export class LimiterManager {
   }
 
   /**
-   * Drain a specific guild+feature queue — wait until all pending jobs complete.
+   * Drain a specific scope+feature queue — wait until all pending jobs complete.
    */
-  async drainGuild(guildId: string, feature: string): Promise<void> {
-    const key = `${guildId}::${feature}`;
+  async drainScope(scopeId: string, feature: string): Promise<void> {
+    const key = `${scopeId}::${feature}`;
     const wrapper = this._limiterCache.get(key);
     if (wrapper) await wrapper.drain();
+  }
+
+  // ── Backwards-compatible aliases ─────────────────────────────────────────
+  //
+  // Earlier releases exposed guild-flavoured names because the library was
+  // first written for a chat-bot backend. The names below keep existing
+  // call sites working; the scope-flavoured names above are the canonical
+  // ones and will be the ones documented going forward.
+
+  /** @deprecated Use {@link removeScopeLimiters} instead. */
+  removeGuildLimiters(guildId: string): void {
+    this.removeScopeLimiters(guildId);
+  }
+
+  /** @deprecated Use {@link drainScope} instead. */
+  drainGuild(guildId: string, feature: string): Promise<void> {
+    return this.drainScope(guildId, feature);
   }
 }
 

@@ -1,8 +1,8 @@
 /**
- * examples/massive.ts — Extreme scale testing for Discord bots.
- * Tests creating 100 guilds, queuing 5,000 API calls for each (500,000 total jobs).
+ * examples/massive.ts — Extreme scale testing.
+ * Creates 100 scopes, queuing 5,000 jobs for each (500,000 total jobs).
  *
- * This test simulates exactly what a bot with thousands of guilds experiences
+ * This simulates exactly what a large multi-tenant application experiences
  * during peak bursts, proving that BetterQueue's non-timer design stays flat
  * in memory without crashing NodeJS.
  *
@@ -21,7 +21,7 @@ function formatNum(n: number): string {
 }
 
 async function main() {
-  console.log('🚀 BetterQueue — Massive Scale Discord Extravaganza\n');
+  console.log('🚀 BetterQueue — Massive Scale Extravaganza\n');
   console.log(`Initial heap: ${heapMB()} MB\n`);
 
   // Start with a large worker pool for huge throughput
@@ -31,17 +31,17 @@ async function main() {
     tickIntervalMs: 50,
   });
 
-  const GUILD_COUNT = 100;
-  const JOBS_PER_GUILD = 5_000;
-  const TOTAL_JOBS = GUILD_COUNT * JOBS_PER_GUILD;
+  const SCOPE_COUNT = 100;
+  const JOBS_PER_SCOPE = 5_000;
+  const TOTAL_JOBS = SCOPE_COUNT * JOBS_PER_SCOPE;
 
-  console.log(`Setting up ${formatNum(GUILD_COUNT)} guilds...`);
+  console.log(`Setting up ${formatNum(SCOPE_COUNT)} scopes...`);
 
-  // Create an array of limiters matching Discord's global limit
-  // Global limit rules: 50 requests per second per bot per guild.
-  const limiters = Array.from({ length: GUILD_COUNT }, (_, i) => {
+  // Create an array of limiters, one per scope.
+  // Global limit rules: 50 requests per second per scope.
+  const limiters = Array.from({ length: SCOPE_COUNT }, (_, i) => {
     return new DistributedLimiter({
-      id: `guild:massive:${i}`,
+      id: `scope:massive:${i}`,
       maxConcurrent: 100000, // Let it burst 50 concurrently
       minTime: 0,       // 20ms between jobs = strictly 50/sec max to avoid 429s globally
       ttl: 60 * 60,      // Keep alive for 1h
@@ -55,7 +55,7 @@ async function main() {
   let completed = 0;
 
   // Use a slightly detached async function to avoid blowing up the call stack locally
-  const firehoseGuild = async (limiter: DistributedLimiter, count: number) => {
+  const firehoseScope = async (limiter: DistributedLimiter, count: number) => {
     const promises: Promise<unknown>[] = [];
     for (let i = 0; i < count; i++) {
        promises.push(
@@ -76,8 +76,8 @@ async function main() {
     console.log(`  [Progress] ${formatNum(completed)} / ${formatNum(TOTAL_JOBS)} completed... | Heap: ${heapMB()} MB`);
   }, 2000);
 
-  // Unleash all guilds concurrently
-  await Promise.all(limiters.map(limiter => firehoseGuild(limiter, JOBS_PER_GUILD)));
+  // Unleash all scopes concurrently
+  await Promise.all(limiters.map(limiter => firehoseScope(limiter, JOBS_PER_SCOPE)));
 
   clearInterval(interval);
   const elapsed = Date.now() - start;

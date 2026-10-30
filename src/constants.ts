@@ -48,11 +48,12 @@ export const DEFAULT_TTL_SECONDS = 3_600;
  * Default number of workers in the pool.
  *
  * Each worker = 1 ioredis BRPOP connection (~2MB RAM).
- * Rule of thumb: workers = expected_peak_concurrent_guilds × avg_jobs_per_guild_per_second × avg_job_duration_sec
+ * Rule of thumb:
+ *   workers = expected_peak_concurrent_queues × avg_jobs_per_queue_per_second × avg_job_duration_sec
  *
- * For a bot with 10k guilds × 40 features:
- *   - 64 workers  → handles ~640 concurrent Discord API calls → good for 3k active guilds
- *   - 128 workers → handles ~1280 concurrent Discord API calls → good for 6k active guilds
+ * For an app with 10k active queues × 40 features:
+ *   - 64 workers  → handles ~640 concurrent jobs → good for 3k active queues
+ *   - 128 workers → handles ~1280 concurrent jobs → good for 6k active queues
  */
 export const DEFAULT_WORKER_COUNT = 64;
 

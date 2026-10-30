@@ -42,11 +42,11 @@
     "distributed",
     "memory-efficient",
     "typescript",
-    "discord",
     "ioredis",
     "token-bucket",
     "backpressure",
-    "crash-recovery"
+    "crash-recovery",
+    "distributed-systems"
   ],
   "author": "Saiop68",
   "license": "MIT",
@@ -56,7 +56,6 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.5",
-    "discord.js": "^14.26.2",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
     "tsup": "^8.0.2",

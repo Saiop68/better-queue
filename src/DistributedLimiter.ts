@@ -26,7 +26,7 @@ import type {
  * const pool = await WorkerPool.create({ redis: { host: 'localhost' } });
  *
  * const limiter = new DistributedLimiter({
- *   id: 'guild:123456789',
+ *   id: 'tenant:123456789',
  *   maxConcurrent: 2,
  *   minTime: 250,
  *   reservoir: 10,
@@ -34,7 +34,7 @@ import type {
  *   reservoirRefreshAmount: 5,
  * });
  *
- * const result = await limiter.schedule(() => callDiscordApi());
+ * const result = await limiter.schedule(() => callApi());
  * ```
  */
 export class DistributedLimiter extends EventEmitter {

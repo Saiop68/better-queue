@@ -12,7 +12,7 @@
  * });
  *
  * const limiter = new DistributedLimiter({
- *   id: 'guild:123456789',
+ *   id: 'tenant:123456789',
  *   maxConcurrent: 2,
  *   minTime: 500,
  *   reservoir: 10,

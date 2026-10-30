@@ -4,7 +4,7 @@
 
   When the queue becomes fully empty (no pending, no running) all of its
   volatile keys are immediately deleted so Redis doesn't accumulate stale
-  empty structures for inactive guilds.  This is the "idle cleanup" path —
+  empty structures for inactive queues.  This is the "idle cleanup" path —
   the queue meta key is left alive (so config survives cache-miss recreation)
   but with a short TTL refreshed on every touch.
 
@@ -86,7 +86,7 @@ if removed == 1 then
     redis.call('EXPIRE', delayedKey, ttl)
   elseif running == 0 then
     -- Queue is completely idle — DELETE volatile runtime keys immediately.
-    -- This frees Redis memory for inactive guilds without waiting for TTL.
+    -- This frees Redis memory for inactive queues without waiting for TTL.
     -- meta key stays alive (short TTL) so getLimiter() cold-starts cheaply.
     redis.call('DEL', runningKey)
     redis.call('DEL', inflightKey)
@@ -98,7 +98,7 @@ if removed == 1 then
     end
     redis.call('ZREM', wakeupKey, queueId)
     -- Meta survives with its current TTL — cheap to recreate, avoids syncMeta
-    -- on every single member-join for guilds that are somewhat active.
+    -- on every single event for queues that are somewhat active.
     redis.call('EXPIRE', metaKey, ttl)
   end
 end

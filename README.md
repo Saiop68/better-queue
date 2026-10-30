@@ -180,7 +180,7 @@ const pool = await WorkerPool.create({
 
 // 2. Create a limiter for each queue (e.g. per tenant).
 const limiter = new DistributedLimiter({
-  id: 'guild:123456789',
+  id: 'scope:123456789',
   maxConcurrent: 2,
   minTime: 500,
   reservoir: 10,
@@ -702,7 +702,7 @@ configuration only; the queue itself lives in Redis.
 
 ```ts
 const limiter = new DistributedLimiter({
-  id: 'guild:123456789',           // required — unique queue key
+  id: 'scope:123456789',           // required — unique queue key
   maxConcurrent: 2,                // max parallel jobs (default: 1)
   minTime: 500,                    // ms between job starts (default: 0)
   reservoir: 10,                   // initial token count (default: unlimited)
@@ -1003,9 +1003,9 @@ per-feature configuration you register at startup.
 | `trackDoneStatus` | `boolean` | — | **Ignored.** Accepted for Bottleneck compatibility. BetterQueue always tracks status in Redis, so there is no overhead to disable. |
 
 `registerFeatureConfig(feature, config)` merges your config over the defaults
-and stores it in an LRU (max 200 entries). `getLimiter(guildId, feature)`
+and stores it in an LRU (max 200 entries). `getLimiter(scopeId, feature)`
 creates the limiter lazily and caches it under the key
-`` `${guildId}::${feature}` `` in an LRU (max 10 000 entries, 10-minute TTL).
+`` `${scopeId}::${feature}` `` in an LRU (max 10 000 entries, 10-minute TTL).
 
 > **Important.** `timeout` is enforced client-side by racing your function
 > against a timer. If your job can legitimately run longer than `timeout`,
@@ -1019,7 +1019,7 @@ creates the limiter lazily and caches it under the key
 Bottleneck-shaped API:
 
 ```ts
-const limiter = limiterManager.getLimiter(guildId, 'guild-member-add');
+const limiter = limiterManager.getLimiter(scopeId, 'member-add');
 
 await limiter.schedule(() => doWork());
 await limiter.schedule({ id: 'some-id', priority: 2 }, () => doWork());
@@ -1042,8 +1042,9 @@ await limiter.schedule({ id: 'some-id', priority: 2 }, () => doWork());
 | `inner` | `DistributedLimiter` | Direct access to the underlying limiter. |
 
 `LimiterManager` itself exposes `registerFeatureConfig`, `getLimiter`,
-`removeLimiter`, `removeGuildLimiters`, `clearAll`, `getStats`,
-`getCacheUsage` and `drainGuild`.
+`removeLimiter`, `removeScopeLimiters`, `clearAll`, `getStats`,
+`getCacheUsage` and `drainScope`. The older `removeGuildLimiters` and
+`drainGuild` names still work as deprecated aliases.
 
 ---
 
@@ -1104,7 +1105,7 @@ Both `better-queue` and `better-queue/LimiterManager` are valid import paths.
 import Bottleneck from 'bottleneck';
 
 const limiter = new Bottleneck({
-  id: 'guild-member-add',
+  id: 'member-add',
   maxConcurrent: 1,
   reservoir: 10,
   reservoirRefreshAmount: 10,
@@ -1126,7 +1127,7 @@ import limiterManager from 'better-queue/LimiterManager';
 
 await WorkerPool.create({ redis: { host: 'localhost', port: 6379 } });
 
-limiterManager.registerFeatureConfig('guild-member-add', {
+limiterManager.registerFeatureConfig('member-add', {
   maxConcurrent: 1,
   reservoir: 10,
   reservoirRefreshAmount: 10,
@@ -1135,7 +1136,7 @@ limiterManager.registerFeatureConfig('guild-member-add', {
   timeout: 3_600_000,
 });
 
-const limiter = limiterManager.getLimiter(guildId, 'guild-member-add');
+const limiter = limiterManager.getLimiter(scopeId, 'member-add');
 const result = await limiter.schedule({ id: 'job-123' }, async () => {
   await doWork();
 });
