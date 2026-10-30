@@ -4,7 +4,7 @@
  *
  * @example
  * ```ts
- * import { WorkerPool, DistributedLimiter } from 'better-queue';
+ * import { WorkerPool, DistributedLimiter } from '@destroyer777777/betterqueue';
  *
  * const pool = await WorkerPool.create({
  *   redis: { host: 'localhost', port: 6379 },

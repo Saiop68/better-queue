@@ -6,7 +6,7 @@
  *
  * MIGRATION from Bottleneck:
  *   Before:  import limiterManager from '../../Structures/LimiterManager.js';
- *   After:   import { limiterManager } from 'better-queue';
+ *   After:   import { limiterManager } from '@destroyer777777/betterqueue';
  *
  * Everything else — registerFeatureConfig, getLimiter, schedule({ id }, fn) — stays identical.
  *

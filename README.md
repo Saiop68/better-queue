@@ -6,8 +6,8 @@
 > Redis — so many queues, many processes, one timer, and one globally
 > consistent ordering.
 
-[![npm version](https://img.shields.io/npm/v/better-queue.svg)](https://www.npmjs.com/package/better-queue)
-[![npm downloads](https://img.shields.io/npm/dm/better-queue.svg)](https://www.npmjs.com/package/better-queue)
+[![npm version](https://img.shields.io/npm/v/@destroyer777777%2Fbetterqueue.svg)](https://www.npmjs.com/package/@destroyer777777/betterqueue)
+[![npm downloads](https://img.shields.io/npm/dm/@destroyer777777%2Fbetterqueue.svg)](https://www.npmjs.com/package/@destroyer777777/betterqueue)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](https://nodejs.org)
 [![typescript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
@@ -141,19 +141,31 @@ early, late, or never.
 ## Installation
 
 ```bash
-npm install better-queue ioredis
+npm install @destroyer777777/betterqueue ioredis
 ```
 
 Requires Node.js ≥ 18 and Redis ≥ 6. Runtime dependencies are `ioredis` and
-`lru-cache` — nothing else. `ioredis` is a peer of your own application: you
-pass its options straight through to `WorkerPool.create()`.
+`lru-cache` — nothing else. You pass your own `ioredis` options straight
+through to `WorkerPool.create()`, so the connection is yours to configure:
+
+```ts
+await WorkerPool.create({
+  redis: { host: '127.0.0.1', port: 6379, password: process.env.REDIS_PASSWORD },
+});
+```
+
+> **On the package name.** The unscoped name `better-queue` is already taken on
+> npm by an unrelated package, and npm's similarity policy rejects
+> `betterqueue` as well, so this library is published under a scope:
+> `@destroyer777777/betterqueue`. The GitHub repository is
+> [Saiop68/better-queue](https://github.com/Saiop68/better-queue).
 
 ---
 
 ## Getting started
 
 ```ts
-import { WorkerPool, DistributedLimiter } from 'better-queue';
+import { WorkerPool, DistributedLimiter } from '@destroyer777777/betterqueue';
 
 // 1. Start the global worker pool ONCE (e.g. in your app's startup).
 const pool = await WorkerPool.create({
@@ -795,7 +807,7 @@ catch a mismatch.
 A complete example:
 
 ```ts
-import { WorkerPool, DistributedLimiter } from 'better-queue';
+import { WorkerPool, DistributedLimiter } from '@destroyer777777/betterqueue';
 
 const pool = await WorkerPool.create({
   redis: { host: 'localhost', port: 6379 },
@@ -864,7 +876,7 @@ All library errors extend `BetterQueueError`.
 | `RedisCommandError` | A Redis command failed unexpectedly. |
 
 ```ts
-import { JobMaxRetriesError } from 'better-queue';
+import { JobMaxRetriesError } from '@destroyer777777/betterqueue';
 
 try {
   await limiter.schedule(async () => { throw new Error('upstream 500'); });
@@ -1074,7 +1086,7 @@ the package root and as its own subpath:
 ```ts
 import limiterManager from 'better-queue/LimiterManager';
 // or
-import { limiterManager } from 'better-queue';
+import { limiterManager } from '@destroyer777777/betterqueue';
 ```
 
 Both `better-queue` and `better-queue/LimiterManager` are valid import paths.
@@ -1104,7 +1116,7 @@ const result = await limiter.schedule({ id: 'job-123' }, async () => {
 **After — BetterQueue:**
 
 ```ts
-import { WorkerPool } from 'better-queue';
+import { WorkerPool } from '@destroyer777777/betterqueue';
 import limiterManager from 'better-queue/LimiterManager';
 
 await WorkerPool.create({ redis: { host: 'localhost', port: 6379 } });
@@ -1139,7 +1151,7 @@ const limiter = new Bottleneck({ maxConcurrent: 2, minTime: 250 });
 await limiter.schedule(() => doWork());
 
 // After
-import { WorkerPool, DistributedLimiter } from 'better-queue';
+import { WorkerPool, DistributedLimiter } from '@destroyer777777/betterqueue';
 await WorkerPool.create({ redis: { host: 'localhost' } });
 const limiter = new DistributedLimiter({ id: 'my-queue', maxConcurrent: 2, minTime: 250 });
 await limiter.schedule(() => doWork());
