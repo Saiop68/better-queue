@@ -1,6 +1,6 @@
 {
   "name": "@destroyer777777/betterqueue",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "High-performance, memory-efficient, distributed rate limiter and job queue for Node.js \u2014 Redis-backed, zero per-limiter timers",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
