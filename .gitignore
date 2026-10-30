@@ -10,4 +10,5 @@ coverage/
 
 # benchmark output
 benchmark/results.json
+benchmark/users.json
 *.tgz
