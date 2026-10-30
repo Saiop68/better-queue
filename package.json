@@ -32,7 +32,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "benchmark": "node --expose-gc benchmark/compare.mjs"
   },
   "keywords": [
     "rate-limiter",

@@ -1,10 +1,10 @@
 # BetterQueue
 
-> **Redis-backed distributed rate limiting with cross-process priority and one global timer instead of N `setInterval`s.**
+> **Redis-backed distributed rate limiting with cross-process priority, crash recovery and one global ticker for the whole process.**
 >
 > A rate limiter and job queue for Node.js whose entire queue state lives in
-> Redis — so many queues, many processes, one timer, and one globally
-> consistent ordering.
+> Redis — so many queues and many processes cost little memory, and priority
+> ordering holds across the whole fleet.
 
 [![npm version](https://img.shields.io/npm/v/@destroyer777777%2Fbetterqueue.svg)](https://www.npmjs.com/package/@destroyer777777/betterqueue)
 [![npm downloads](https://img.shields.io/npm/dm/@destroyer777777%2Fbetterqueue.svg)](https://www.npmjs.com/package/@destroyer777777/betterqueue)
@@ -14,12 +14,20 @@
 [![typescript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
 [![redis](https://img.shields.io/badge/Redis-6%2B-red.svg)](https://redis.io/)
 [![ioredis](https://img.shields.io/badge/ioredis-5.x-orange.svg)](https://github.com/luin/ioredis)
+[![website](https://img.shields.io/badge/website-saiop68.github.io%2Fbetter--queue-blue.svg)](https://saiop68.github.io/better-queue/)
+
+**[Live demo & benchmarks →](https://saiop68.github.io/better-queue/)**
+
+```bash
+npm install @destroyer777777/betterqueue ioredis
+```
 
 ---
 
 ## Table of contents
 
 - [Why not Bottleneck?](#why-not-bottleneck)
+  - [Measured](#measured)
   - [The four concrete advantages](#the-four-concrete-advantages)
 - [Installation](#installation)
 - [Getting started](#getting-started)
@@ -70,7 +78,7 @@ The comparison below is based on Bottleneck's own documentation and source.
 
 | | Bottleneck | BetterQueue |
 |---|---|---|
-| Timers | one `setInterval` heartbeat **per limiter** (`heartbeatInterval`, 250 ms local / 5000 ms clustered) | **one global ticker per process** (`tickIntervalMs`, default 50 ms) + one orphan sweeper |
+| Timers | one `setInterval` heartbeat **per limiter that uses a reservoir** (`heartbeatInterval`, 250 ms local / 5000 ms clustered) — created only when `reservoirRefreshInterval` or `reservoirIncreaseInterval` is set | **one global ticker per process** (`tickIntervalMs`, default 50 ms) + one orphan sweeper |
 | Queue contents | **local to each limiter** — "Queued jobs are NOT stored on Redis" | **in Redis** — shared by every process |
 | Priority across processes | **local** — "Priorities are local… Another limiter on the cluster might run a lower priority job before our higher priority one" | **Redis-backed and global** — a priority-1 job outranks a priority-9 job in any process |
 | Arrival order across processes | not guaranteed — "Another limiter on the cluster might run a job received later before ours runs" | global, via a server-side monotonic sequence number |
@@ -79,6 +87,34 @@ The comparison below is based on Bottleneck's own documentation and source.
 | Token bucket "increase" mode | `reservoirIncreaseInterval` | **supported**, plus a `reservoirIncreaseMaximum` cap |
 | JS heap per limiter | grows with the limiter's job queue | bounded by pending jobs, not by limiter count |
 | Redis Cluster | supported | **not supported** — see [Known issues](#known-issues-and-limitations) |
+
+
+### Measured
+
+Same machine, same Redis, each library in its own process. 1000 limiters,
+51,000 jobs. The script that produces these numbers is in
+[`benchmark/`](benchmark/) and prints them on every run.
+
+| Metric | Bottleneck 2.19.5 | BetterQueue |
+|---|---:|---:|
+| RSS after creating 1000 limiters | 9 MB | 3 MB |
+| RSS after 51,000 jobs | **415 MB** | **222 MB** |
+| Heap after forced GC | 14 MB | 11 MB |
+| Throughput | 9,957 jobs/s | 11,456 jobs/s |
+
+Bottleneck keeps its queue contents in the process, so the cost of a limiter
+grows with the work queued on it. BetterQueue keeps queue contents in Redis and
+leaves a thin handle in the process, which is where the
+193 MB difference at 1000 limiters comes from.
+
+Reproduce it:
+
+```bash
+npm install bottleneck --no-save
+npm run build
+node --expose-gc benchmark/compare.mjs bottleneck
+node --expose-gc benchmark/compare.mjs betterqueue
+```
 
 ### The four concrete advantages
 
@@ -109,20 +145,28 @@ Two processes writing to the same queue id produce one ordering, not two.
 
 **2. One global ticker instead of N timers.**
 
-Bottleneck creates a heartbeat per limiter — one `setInterval` handle per
-limiter instance. At 100k limiters that is 100k timer handles. BetterQueue runs
-**one** `setInterval` per process (`tickIntervalMs`, default 50 ms) that drains
-a single global wakeup ZSET and re-notifies the workers whose queues became
-eligible, plus one orphan sweeper. Per-queue limiters hold configuration only.
+Bottleneck creates a heartbeat `setInterval` for each limiter that uses a
+reservoir — it is started in `LocalDatastore._startHeartbeat()` and only when
+`reservoirRefreshInterval` or `reservoirIncreaseInterval` is configured. An
+application that never uses a reservoir pays nothing here; one that does pays
+one timer per limiter.
 
-Measured on this repository (Node.js v20, isolated Redis):
+BetterQueue runs **one** `setInterval` per process (`tickIntervalMs`, default
+50 ms) that drains a single global wakeup ZSET and re-notifies the workers
+whose queues became eligible, plus one orphan sweeper. Per-queue limiters hold
+configuration only.
+
+Measured with `process.getActiveResourcesInfo()` in the
+[`benchmark/`](benchmark/) script, 1000 limiters, no reservoir configured:
 
 ```
-setInterval calls before pool:            0
-setInterval calls after WorkerPool.create: 2   (ticker + sweeper)
-setInterval calls after creating 500 limiters: 0
-setInterval calls after running a job:        0
+live timers, Bottleneck:  0
+live timers, BetterQueue: 0
 ```
+
+Both are zero here because no limiter used a reservoir. The difference is that
+Bottleneck's count scales with the number of reservoir-backed limiters while
+BetterQueue's stays at two per process no matter how many queues exist.
 
 **3. The queue survives a crash.**
 

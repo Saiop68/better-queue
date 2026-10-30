@@ -7,3 +7,7 @@ dist/
 *.log
 .DS_Store
 coverage/
+
+# benchmark output
+benchmark/results.json
+*.tgz
