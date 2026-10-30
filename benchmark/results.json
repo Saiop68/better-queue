@@ -1,0 +1,110 @@
+{
+  "1000": {
+    "bottleneck": {
+      "target": "bottleneck",
+      "node": "v26.7.0",
+      "limiters": 1000,
+      "jobsEach": 50,
+      "base": {
+        "rss": 45,
+        "heap": 5
+      },
+      "afterCreate": {
+        "rss": 54,
+        "heap": 10
+      },
+      "afterJobs": {
+        "rss": 460,
+        "heap": 105
+      },
+      "afterGc": {
+        "rss": 460,
+        "heap": 14
+      },
+      "timers": 0,
+      "elapsedMs": 5122,
+      "throughput": 9957,
+      "totalJobs": 51000
+    },
+    "betterqueue": {
+      "target": "betterqueue",
+      "node": "v26.7.0",
+      "limiters": 1000,
+      "jobsEach": 50,
+      "base": {
+        "rss": 67,
+        "heap": 12
+      },
+      "afterCreate": {
+        "rss": 70,
+        "heap": 16
+      },
+      "afterJobs": {
+        "rss": 289,
+        "heap": 165
+      },
+      "afterGc": {
+        "rss": 284,
+        "heap": 11
+      },
+      "timers": 0,
+      "elapsedMs": 4452,
+      "throughput": 11456,
+      "totalJobs": 51000
+    }
+  },
+  "100": {
+    "bottleneck": {
+      "target": "bottleneck",
+      "node": "v26.7.0",
+      "limiters": 100,
+      "jobsEach": 50,
+      "base": {
+        "rss": 45,
+        "heap": 5
+      },
+      "afterCreate": {
+        "rss": 47,
+        "heap": 6
+      },
+      "afterJobs": {
+        "rss": 155,
+        "heap": 47
+      },
+      "afterGc": {
+        "rss": 156,
+        "heap": 6
+      },
+      "timers": 0,
+      "elapsedMs": 571,
+      "throughput": 8932,
+      "totalJobs": 5100
+    },
+    "betterqueue": {
+      "target": "betterqueue",
+      "node": "v26.7.0",
+      "limiters": 100,
+      "jobsEach": 50,
+      "base": {
+        "rss": 67,
+        "heap": 12
+      },
+      "afterCreate": {
+        "rss": 69,
+        "heap": 16
+      },
+      "afterJobs": {
+        "rss": 144,
+        "heap": 35
+      },
+      "afterGc": {
+        "rss": 144,
+        "heap": 8
+      },
+      "timers": 0,
+      "elapsedMs": 463,
+      "throughput": 11015,
+      "totalJobs": 5100
+    }
+  }
+}

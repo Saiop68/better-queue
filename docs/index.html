@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BetterQueue — Redis-backed rate limiter &amp; job queue for Node.js</title>
+<meta name="description" content="A distributed rate limiter and job queue for Node.js. Zero per-limiter timers, cross-process priority, crash recovery. 222 MB vs Bottleneck's 415 MB for 1000 limiters.">
+<link rel="canonical" href="https://saiop68.github.io/better-queue/">
+<meta property="og:title" content="BetterQueue — Redis-backed rate limiter & job queue for Node.js">
+<meta property="og:description" content="1000 limiters: 222 MB RSS vs Bottleneck's 415 MB. Zero per-limiter timers. Cross-process priority. Crash recovery.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://saiop68.github.io/better-queue/">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #f0883e; --accent2: #58a6ff;
+    --good: #3fb950; --bad: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 0 22px 80px; }
+  header { padding: 72px 0 44px; text-align: center; }
+  .logo { width: 92px; height: 92px; border-radius: 20px; margin-bottom: 22px; }
+  h1 { font-size: 46px; margin: 0 0 10px; letter-spacing: -1px; }
+  h1 .q { color: var(--accent); }
+  .tag { font-size: 20px; color: var(--muted); margin: 0 0 14px; }
+  .lede { font-size: 17px; color: var(--text); max-width: 660px; margin: 0 auto 30px; }
+  .badges { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 30px; }
+  .badge { font-size: 13px; padding: 5px 11px; border-radius: 6px; border: 1px solid var(--border); color: var(--muted); }
+  .badge.ok { color: var(--good); border-color: rgba(63,185,80,.4); }
+  a.btn {
+    display: inline-block; padding: 13px 26px; border-radius: 8px; text-decoration: none;
+    font-weight: 600; margin: 5px; font-size: 16px;
+  }
+  .btn.primary { background: var(--accent); color: #1a1207; }
+  .btn.ghost { border: 1px solid var(--border); color: var(--text); }
+  .btn.ghost:hover { border-color: var(--accent2); }
+  pre {
+    background: #010409; border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px; overflow-x: auto; font-size: 14px; color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  pre .c { color: var(--muted); }
+  pre .k { color: var(--accent2); }
+  pre .s { color: #a5d6ff; }
+  h2 { font-size: 30px; margin: 56px 0 18px; letter-spacing: -.5px; }
+  h3 { font-size: 19px; margin: 32px 0 10px; color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 15px; }
+  th, td { padding: 12px 14px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; }
+  td.win { color: var(--good); font-weight: 700; }
+  td.lose { color: var(--muted); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin: 24px 0; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px; }
+  .card h4 { margin: 0 0 8px; font-size: 17px; color: var(--accent); }
+  .card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .note { background: rgba(240,136,62,.08); border-left: 3px solid var(--accent); padding: 14px 18px; border-radius: 6px; color: var(--muted); font-size: 14.5px; margin: 18px 0; }
+  footer { border-top: 1px solid var(--border); margin-top: 60px; padding-top: 26px; color: var(--muted); font-size: 14px; text-align: center; }
+  a { color: var(--accent2); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <img class="logo" src="logo.png" alt="BetterQueue logo">
+  <h1>Better<span class="q">Queue</span></h1>
+  <p class="tag">A Redis-backed rate limiter and job queue for Node.js</p>
+  <p class="lede">
+    Run one limiter per tenant, per user, or per route — across every process
+    in your fleet. Queue state lives in Redis, so memory stays flat and a
+    crashed process doesn't lose its jobs.
+  </p>
+  <div class="badges">
+    <span class="badge ok">37/37 tests</span>
+    <span class="badge ok">CI on Node 18 / 20 / 22</span>
+    <span class="badge">MIT</span>
+    <span class="badge">2 runtime deps</span>
+    <span class="badge">TypeScript</span>
+  </div>
+  <div>
+    <a class="btn primary" href="https://www.npmjs.com/package/@destroyer777777/betterqueue">npm install</a>
+    <a class="btn ghost" href="https://github.com/Saiop68/better-queue">GitHub</a>
+  </div>
+</header>
+
+<h2>Install</h2>
+<pre><span class="c"># npmjs.org — no token, no account, works immediately</span>
+<span class="k">npm install</span> @destroyer777777/betterqueue ioredis</pre>
+
+<h2>Use it</h2>
+<pre><span class="k">import</span> { WorkerPool, DistributedLimiter } <span class="k">from</span> <span class="s">'@destroyer777777/betterqueue'</span>;
+
+<span class="c">// One pool for the whole process.</span>
+<span class="k">const</span> pool = <span class="k">await</span> WorkerPool.create({
+  redis: { host: <span class="s">'localhost'</span>, port: <span class="s">6379</span> },
+  workers: <span class="s">16</span>,
+});
+
+<span class="c">// A limiter per tenant. State lives in Redis, not in this process.</span>
+<span class="k">const</span> limiter = <span class="k">new</span> DistributedLimiter({
+  id: <span class="s">'tenant:acme'</span>,
+  maxConcurrent: <span class="s">5</span>,
+  minTime: <span class="s">100</span>,
+});
+
+<span class="k">await</span> limiter.schedule(<span class="k">async</span> () => {
+  <span class="k">await</span> doWork();
+});
+
+<span class="k">await</span> pool.stop();</pre>
+
+<h2>BetterQueue vs Bottleneck</h2>
+<p style="color:var(--muted)">
+  Measured on the same machine, same Redis, each library in its own process.
+  1000 limiters, 51,000 jobs. Reproduce it yourself — the script is in the repo.
+</p>
+<table>
+  <thead>
+    <tr><th>Metric</th><th>Bottleneck</th><th>BetterQueue</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>RSS to create 1000 limiters</td><td>9 MB</td><td class="win">3 MB</td></tr>
+    <tr><td>RSS after 51,000 jobs</td><td>415 MB</td><td class="win">222 MB</td></tr>
+    <tr><td>Heap after forced GC</td><td>14 MB</td><td class="win">11 MB</td></tr>
+    <tr><td>Throughput</td><td>9,957 jobs/s</td><td class="win">11,456 jobs/s</td></tr>
+    <tr><td>Cross-process priority queue</td><td class="lose">no</td><td class="win">yes</td></tr>
+    <tr><td>Delayed jobs (scheduleAt)</td><td class="lose">no</td><td class="win">yes</td></tr>
+    <tr><td>Job survives a crashed process</td><td class="lose">no</td><td class="win">yes</td></tr>
+    <tr><td>Runtime dependencies</td><td>0</td><td>2 (ioredis, lru-cache)</td></tr>
+  </tbody>
+</table>
+<div class="note">
+  <strong>Honest caveat:</strong> Bottleneck has zero dependencies and is very
+  good at what it does. If you need one process and a handful of limiters,
+  Bottleneck is the lighter choice. BetterQueue earns its dependencies when
+  you're running many limiters, more than one process, or jobs that must
+  survive a restart.
+</div>
+
+<h2>What you get</h2>
+<div class="grid">
+  <div class="card"><h4>Flat memory</h4><p>Limiters are thin handles. Queue state lives in Redis, so 1,000 limiters cost about the same as 10.</p></div>
+  <div class="card"><h4>One ticker</h4><p>A single global timer for the whole process. No timer per limiter, no timer per queue.</p></div>
+  <div class="card"><h4>Real priority</h4><p>Jobs are ordered by priority across every process, computed server-side in Redis.</p></div>
+  <div class="card"><h4>Crash recovery</h4><p>Kill a worker mid-job and the job is re-queued by another process, not lost.</p></div>
+  <div class="card"><h4>Delayed jobs</h4><p><code>scheduleAt()</code> for anything that needs to happen later. Bottleneck can't do this.</p></div>
+  <div class="card"><h4>Atomic state</h4><p>Every state transition is a Lua script, so two workers can't race the same queue.</p></div>
+</div>
+
+<h2>Bottleneck compatibility</h2>
+<p style="color:var(--muted)">
+  Already using Bottleneck? The <code>LimiterManager</code> entry point keeps the
+  same <code>registerFeatureConfig</code> / <code>getLimiter</code> /
+  <code>schedule()</code> shape, so most migrations are an import-path change.
+</p>
+<pre><span class="k">import</span> { limiterManager } <span class="k">from</span> <span class="s">'@destroyer777777/betterqueue/LimiterManager'</span>;
+
+limiterManager.registerFeatureConfig(<span class="s">'member-add'</span>, {
+  maxConcurrent: <span class="s">5</span>,
+  minTime: <span class="s">250</span>,
+});
+
+<span class="k">const</span> limiter = limiterManager.getLimiter(tenantId, <span class="s">'member-add'</span>);
+<span class="k">await</span> limiter.schedule({ id: jobId }, <span class="k">async</span> () => { <span class="c">/* work */</span> });</pre>
+
+<h2>Not supported (yet)</h2>
+<p style="color:var(--muted)">
+  Being straight about this: Redis Cluster, node-redis v4, sliding-window rate
+  limiting, cron/scheduled groups, and <code>reset()</code>/<code>cancel()</code>
+  are <strong>not implemented</strong>. Crash recovery re-queues work but does not
+  resume it mid-flight.
+</p>
+
+<h2>Get involved</h2>
+<p style="color:var(--muted)">
+  The project is young and the roadmap is on the
+  <a href="https://github.com/Saiop68/better-queue#contributing">contributing page</a>.
+  Redis Cluster support, a node-redis adapter, a sliding window, and job
+  inspection are all open and all welcome.
+</p>
+<div>
+  <a class="btn primary" href="https://github.com/Saiop68/better-queue">Star on GitHub</a>
+  <a class="btn ghost" href="https://github.com/Saiop68/better-queue/issues">Open an issue</a>
+  <a class="btn ghost" href="https://www.npmjs.com/package/@destroyer777777/betterqueue">npm</a>
+</div>
+
+<footer>
+  MIT licensed. <a href="https://github.com/Saiop68/better-queue">Saiop68/better-queue</a>
+</footer>
+
+</div>
+</body>
+</html>
