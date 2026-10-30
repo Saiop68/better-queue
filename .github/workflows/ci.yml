@@ -55,6 +55,41 @@ jobs:
           REDIS_HOST: 127.0.0.1
           REDIS_PORT: 6379
 
+
+  sentinel:
+    name: sentinel & failover
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install redis-server
+        # The Sentinel tests start a master, a replica and a sentinel themselves.
+        # The service container cannot be used for this: a sentinel probe issues
+        # REPLICAOF against its target, which a containerised service does not
+        # allow, and the tests need a disposable topology they can kill.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq redis-server
+          redis-server --version
+
+      - name: Run the Sentinel tests
+        # The sentinel tests are self-contained: they create and destroy their
+        # own topology on fixed local ports.
+        run: npx vitest run test/sentinel.test.ts test/sentinel-failover.test.ts
+        env:
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: 6379
+
   publish-check:
     name: verify publishable tarball
     runs-on: ubuntu-latest

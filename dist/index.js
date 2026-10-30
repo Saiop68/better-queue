@@ -40,6 +40,7 @@ __export(index_exports, {
   RedisCommandError: () => RedisCommandError,
   WorkerPool: () => WorkerPool,
   WorkerPoolNotInitializedError: () => WorkerPoolNotInitializedError,
+  isSentinelOptions: () => isSentinelOptions,
   limiterManager: () => limiterManager
 });
 module.exports = __toCommonJS(index_exports);
@@ -1047,12 +1048,29 @@ function registerCommands(redis) {
     lua: LUA.poolUnregister
   });
 }
+function toIoredisOptions(connection) {
+  if (!isSentinelOptions(connection)) return connection;
+  const { sentinels, name, sentinelPassword, sentinelUsername, password, username, tls, redisOptions } = connection;
+  return {
+    sentinels,
+    name,
+    ...sentinelPassword ? { sentinelPassword } : {},
+    ...sentinelUsername ? { sentinelUsername } : {},
+    ...password ? { password } : {},
+    ...username ? { username } : {},
+    ...tls ? { tls } : {},
+    ...redisOptions ?? {}
+  };
+}
+function isSentinelOptions(connection) {
+  return typeof connection === "object" && connection !== null && Array.isArray(connection.sentinels) && connection.sentinels.length > 0 && typeof connection.name === "string" && connection.name.length > 0;
+}
 function createRedisClient(options) {
   const client = new import_ioredis.default({
     enableOfflineQueue: true,
     lazyConnect: false,
     maxRetriesPerRequest: 3,
-    ...options
+    ...toIoredisOptions(options)
   });
   registerCommands(client);
   client.on("error", (err) => {
@@ -1067,7 +1085,7 @@ function createBlockingClient(options) {
     lazyConnect: false,
     // No retries on blocking connection — ioredis auto-reconnects
     maxRetriesPerRequest: null,
-    ...options
+    ...toIoredisOptions(options)
   });
 }
 
@@ -2162,6 +2180,7 @@ var limiterManager = LimiterManager.getInstance();
   RedisCommandError,
   WorkerPool,
   WorkerPoolNotInitializedError,
+  isSentinelOptions,
   limiterManager
 });
 //# sourceMappingURL=index.js.map

@@ -1,4 +1,9 @@
-import Redis, { type RedisOptions } from 'ioredis';
+import Redis, {
+  Cluster,
+  type RedisOptions,
+  type ClusterOptions,
+  type ClusterNode,
+} from 'ioredis';
 import { LUA } from './lua-scripts';
 
 // ── Typed Redis command extensions ─────────────────────────────────────────
@@ -150,16 +155,96 @@ function registerCommands(redis: Redis): void {
   });
 }
 
+// ── Deployment configuration ───────────────────────────────────────────────
+
+/**
+ * A Sentinel-managed Redis deployment.
+ *
+ * The Sentinel discovers the current master and hands back a primary endpoint.
+ * If the master fails over, `ioredis` reconnects to the new one.
+ */
+export interface SentinelOptions {
+  /** Sentinel addresses to query for the master. */
+  readonly sentinels: readonly ClusterNode[];
+  /** The name the master is registered under, e.g. `mymaster`. */
+  readonly name: string;
+  /** Password for the Sentinel itself (usually different from the data node). */
+  readonly sentinelPassword?: string;
+  /** Username for the Sentinel itself. */
+  readonly sentinelUsername?: string;
+  /** Password for the master and its replicas. */
+  readonly password?: string;
+  /** Username for the master and its replicas. */
+  readonly username?: string;
+  /** TLS to the data nodes. */
+  readonly tls?: Record<string, unknown>;
+  /** Any other ioredis option applied to the data connection. */
+  readonly redisOptions?: RedisOptions;
+}
+
+/**
+ * How to reach Redis.
+ *
+ * - `{ host, port }` — a single node (the default, unchanged behaviour)
+ * - `{ sentinels, name }` — a Sentinel-managed primary with automatic failover
+ */
+export type RedisConnection =
+  | RedisOptions
+  | SentinelOptions;
+
+/**
+ * Normalise the two accepted shapes into one ioredis options object.
+ *
+ * The existing `{ host, port }` form must keep working exactly as before,
+ * so the single-node path is passed through untouched.
+ */
+function toIoredisOptions(connection: RedisConnection): RedisOptions {
+  if (!isSentinelOptions(connection)) return connection;
+
+  const { sentinels, name, sentinelPassword, sentinelUsername, password, username, tls, redisOptions } = connection;
+
+  return {
+    sentinels: sentinels as ClusterNode[],
+    name,
+    ...(sentinelPassword ? { sentinelPassword } : {}),
+    ...(sentinelUsername ? { sentinelUsername } : {}),
+    ...(password ? { password } : {}),
+    ...(username ? { username } : {}),
+    ...(tls ? { tls } : {}),
+    ...(redisOptions ?? {}),
+  } as RedisOptions;
+}
+
+/**
+ * Does this look like a Sentinel configuration rather than plain ioredis
+ * options?
+ *
+ * `sentinels` + `name` is the discriminator. Plain ioredis options never
+ * carry both, and `name` alone would be ambiguous, so require both.
+ */
+export function isSentinelOptions(
+  connection: RedisConnection,
+): connection is SentinelOptions {
+  return (
+    typeof connection === 'object' &&
+    connection !== null &&
+    Array.isArray((connection as SentinelOptions).sentinels) &&
+    (connection as SentinelOptions).sentinels.length > 0 &&
+    typeof (connection as SentinelOptions).name === 'string' &&
+    (connection as SentinelOptions).name.length > 0
+  );
+}
+
 /**
  * Create a new ioredis connection with all BetterQueue custom commands
  * pre-registered. Every connection in the pool uses this factory.
  */
-export function createRedisClient(options: RedisOptions): Redis {
+export function createRedisClient(options: RedisConnection): Redis {
   const client = new Redis({
     enableOfflineQueue: true,
     lazyConnect: false,
     maxRetriesPerRequest: 3,
-    ...options,
+    ...toIoredisOptions(options),
   });
 
   registerCommands(client);
@@ -176,12 +261,23 @@ export function createRedisClient(options: RedisOptions): Redis {
  * Create a dedicated blocking connection for BRPOP.
  * This connection must NOT be shared with other commands.
  */
-export function createBlockingClient(options: RedisOptions): Redis {
+export function createBlockingClient(options: RedisConnection): Redis {
   return new Redis({
     enableOfflineQueue: true,
     lazyConnect: false,
     // No retries on blocking connection — ioredis auto-reconnects
     maxRetriesPerRequest: null,
-    ...options,
+    ...toIoredisOptions(options),
   });
 }
+
+/**
+ * Re-export the Cluster type so callers can construct one and pass it in
+ * without depending on ioredis directly.
+ *
+ * 📌 Cluster is NOT supported yet: the Lua scripts operate on several keys at
+ * once and the key layout has no hash tag, so a clustered deployment returns
+ * CROSSSLOT. See docs/CLUSTER-SUPPORT.md.
+ */
+export { Cluster };
+export type { ClusterOptions };

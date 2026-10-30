@@ -9,8 +9,9 @@ import {
   RedisCommandError,
   WorkerPool,
   WorkerPoolNotInitializedError,
+  isSentinelOptions,
   limiterManager
-} from "./chunk-TFDV763D.mjs";
+} from "./chunk-GEWJ3SEK.mjs";
 export {
   BetterQueueError,
   DistributedLimiter,
@@ -22,6 +23,7 @@ export {
   RedisCommandError,
   WorkerPool,
   WorkerPoolNotInitializedError,
+  isSentinelOptions,
   limiterManager
 };
 //# sourceMappingURL=index.mjs.map

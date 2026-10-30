@@ -1,7 +1,7 @@
 import Redis from 'ioredis';
 import { EventEmitter } from 'node:events';
-import { P as PendingJob, W as WorkerPoolOptions } from './LimiterManager-DUS2PFal.mjs';
-export { D as DequeueResult, a as DequeueStatus, b as DistributedLimiter, F as FeatureConfig, J as JobPayload, L as LimiterEvents, c as LimiterManager, d as LimiterOptions, e as LimiterWrapper, Q as QueueStats, R as ResolvedLimiterOptions, S as ScheduleJobOptions, f as ScheduleOptions, l as limiterManager } from './LimiterManager-DUS2PFal.mjs';
+import { P as PendingJob, W as WorkerPoolOptions } from './LimiterManager-Cn1pCvLC.mjs';
+export { D as DequeueResult, a as DequeueStatus, b as DistributedLimiter, F as FeatureConfig, J as JobPayload, L as LimiterEvents, c as LimiterManager, d as LimiterOptions, e as LimiterWrapper, Q as QueueStats, R as RedisConnection, f as ResolvedLimiterOptions, S as ScheduleJobOptions, g as ScheduleOptions, h as SentinelOptions, i as isSentinelOptions, l as limiterManager } from './LimiterManager-Cn1pCvLC.mjs';
 
 /**
  * WorkerPool — the engine of BetterQueue.

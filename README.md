@@ -29,6 +29,10 @@ npm install @destroyer777777/betterqueue ioredis
 - [Why not Bottleneck?](#why-not-bottleneck)
   - [Measured](#measured)
   - [The four concrete advantages](#the-four-concrete-advantages)
+- [Redis deployment modes](#redis-deployment-modes)
+  - [Single node (default)](#single-node-default)
+  - [Sentinel (automatic failover)](#sentinel-automatic-failover)
+  - [Redis Cluster (not supported yet)](#redis-cluster-not-supported-yet)
 - [Installation](#installation)
 - [Getting started](#getting-started)
 - [Core concepts](#core-concepts)
@@ -87,7 +91,7 @@ The comparison below is based on Bottleneck's own documentation and source.
 | Token bucket "increase" mode | `reservoirIncreaseInterval` | **supported**, plus a `reservoirIncreaseMaximum` cap |
 | JS heap per limiter | grows with the limiter's job queue | bounded by pending jobs, not by limiter count |
 | Redis Cluster | supported | **not supported** — see [docs/CLUSTER-SUPPORT.md](docs/CLUSTER-SUPPORT.md) |
-| Redis Sentinel | supported | **not supported yet** — small change, no key migration needed |
+| Redis Sentinel | supported | **supported** — `{ sentinels, name }`, automatic failover |
 
 
 ### Measured
@@ -211,6 +215,61 @@ await WorkerPool.create({
 > [Saiop68/better-queue](https://github.com/Saiop68/better-queue).
 
 ---
+
+## Redis deployment modes
+
+### Single node (default)
+
+```ts
+const pool = await WorkerPool.create({
+  redis: { host: '127.0.0.1', port: 6379 },
+});
+```
+
+### Sentinel (automatic failover)
+
+Point the pool at the sentinels and the name the master is registered under.
+The Sentinel resolves the current primary and the client follows it through a
+failover.
+
+```ts
+const pool = await WorkerPool.create({
+  redis: {
+    sentinels: [
+      { host: '10.0.0.1', port: 26379 },
+      { host: '10.0.0.2', port: 26379 },
+      { host: '10.0.0.3', port: 26379 },
+    ],
+    name: 'mymaster',
+    // optional
+    password: process.env.REDIS_PASSWORD,
+    sentinelPassword: process.env.SENTINEL_PASSWORD,
+  },
+});
+```
+
+There is no key-layout change and no script change for Sentinel — the queue
+state and the atomicity guarantees are identical to a single-node deployment.
+When the primary dies, the Sentinel promotes a replica and the pool reconnects
+to it.
+
+### Redis Cluster (not supported yet)
+
+The Lua scripts operate on several keys at once, and Redis Cluster requires
+every key in a script to land in the same slot. The current key layout has no
+hash tag, so a clustered deployment returns `CROSSSLOT`. This was measured
+against a live 3-node cluster:
+
+```
+current key layout         -> CROSSSLOT Keys in request don't hash to the same slot
+all queue keys, no globals -> OK
+queue + bq:global:wakeup   -> CROSSSLOT
+```
+
+The fix is a key-layout change plus a client-side notify fan-out. The full
+analysis, the migration plan and the test plan are in
+**[docs/CLUSTER-SUPPORT.md](docs/CLUSTER-SUPPORT.md)**.
+
 
 ## Getting started
 
@@ -1257,12 +1316,23 @@ slot is released.
   analysis, the migration plan and the test plan are in
   **[docs/CLUSTER-SUPPORT.md](docs/CLUSTER-SUPPORT.md)**.
 
-- **Redis Sentinel is not supported yet, but it is a small change.**
-  `ioredis` — the only Redis client this library uses — already exports
-  `SentinelConnector`, and connecting through a Sentinel was verified against
-  a live master/replica/sentinel setup. Adding it is a client-layer change
-  with no key or script changes, so it does not affect any existing
-  deployment. It is the recommended next step ahead of Cluster support.
+- **Redis Sentinel is supported.** Pass the sentinels and the master name
+  instead of a host and port:
+
+  ```ts
+  const pool = await WorkerPool.create({
+    redis: {
+      sentinels: [{ host: '127.0.0.1', port: 26379 }],
+      name: 'mymaster',
+    },
+  });
+  ```
+
+  The Sentinel discovers the current primary and `ioredis` follows it through
+  a failover. No key layout change, no script change — the queue state and
+  the atomicity guarantees are identical to a single-node deployment. The
+  failover path is covered by a test that kills the primary outright and
+  asserts that jobs keep running once the replica has been promoted.
 - **The reservoir interval is not aligned to a wall-clock schedule.** Because
   refills are applied lazily on the next dequeue or stats read, a bucket can
   refill slightly later than the exact interval boundary if the queue is
@@ -1415,7 +1485,7 @@ redis-cli KEYS 'bq:workers:notify:*'
 ## Requirements
 
 - **Node.js** ≥ 18
-- **Redis** ≥ 6 (single node — **not** Redis Cluster and not Sentinel yet)
+- **Redis** ≥ 6 (single node or Sentinel-managed primary — **not** Redis Cluster)
 - **TypeScript** ≥ 5 if you use the bundled type definitions
 
 Runtime dependencies: `ioredis` and `lru-cache`. Nothing else.

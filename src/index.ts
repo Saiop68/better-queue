@@ -29,6 +29,8 @@ export { LimiterManager, LimiterWrapper, limiterManager } from './LimiterManager
 export type { FeatureConfig, ScheduleJobOptions } from './LimiterManager';
 export { DistributedLimiter } from './DistributedLimiter';
 export { KEYS } from './constants';
+export type { RedisConnection, SentinelOptions } from './RedisClient';
+export { isSentinelOptions } from './RedisClient';
 export {
   BetterQueueError,
   JobMaxRetriesError,

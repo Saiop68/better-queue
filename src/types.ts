@@ -1,4 +1,4 @@
-import type { RedisOptions } from 'ioredis';
+import type { RedisConnection } from './RedisClient';
 
 // ── Queue configuration ───────────────────────────────────────────────────────
 
@@ -180,8 +180,13 @@ export interface ScheduleOptions {
 
 /** Options for configuring the global WorkerPool. */
 export interface WorkerPoolOptions {
-  /** ioredis connection options. */
-  readonly redis: RedisOptions;
+  /**
+   * How to reach Redis.
+   *
+   * - `{ host, port }` — a single node
+   * - `{ sentinels, name }` — a Sentinel-managed primary with automatic failover
+   */
+  readonly redis: RedisConnection;
   /** Number of concurrent workers. @default 4 */
   readonly workers?: number;
   /** Global ticker interval in ms (for deferred wakeups). @default 50 */

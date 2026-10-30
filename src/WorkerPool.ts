@@ -1,5 +1,5 @@
 import type Redis from 'ioredis';
-import type { RedisOptions } from 'ioredis';
+import type { RedisConnection } from './RedisClient';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { createRedisClient, createBlockingClient } from './RedisClient';
@@ -42,7 +42,7 @@ class Worker {
   private readonly pool: WorkerPool;
   private running = false;
 
-  constructor(id: number, redisOptions: RedisOptions, pool: WorkerPool) {
+  constructor(id: number, redisOptions: RedisConnection, pool: WorkerPool) {
     this.id      = id;
     this.pool    = pool;
     this.blockingConn = createBlockingClient(redisOptions);
@@ -342,7 +342,7 @@ export class WorkerPool extends EventEmitter {
   readonly poolId: string;
 
   private readonly workers: Worker[];
-  private readonly redisOptions: RedisOptions;
+  private readonly redisOptions: RedisConnection;
   private readonly tickIntervalMs: number;
   private readonly visibilityTimeoutMs: number;
   private readonly pendingJobTimeoutMs: number;
