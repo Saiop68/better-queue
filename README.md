@@ -86,7 +86,8 @@ The comparison below is based on Bottleneck's own documentation and source.
 | Delayed jobs (`scheduleAt`) | not supported | **supported** (`scheduleAt`) |
 | Token bucket "increase" mode | `reservoirIncreaseInterval` | **supported**, plus a `reservoirIncreaseMaximum` cap |
 | JS heap per limiter | grows with the limiter's job queue | bounded by pending jobs, not by limiter count |
-| Redis Cluster | supported | **not supported** — see [Known issues](#known-issues-and-limitations) |
+| Redis Cluster | supported | **not supported** — see [docs/CLUSTER-SUPPORT.md](docs/CLUSTER-SUPPORT.md) |
+| Redis Sentinel | supported | **not supported yet** — small change, no key migration needed |
 
 
 ### Measured
@@ -1240,13 +1241,28 @@ slot is released.
 - **Redis Cluster is not supported.** The Lua scripts operate on multiple keys
   at once, and the key names do not contain a Redis Cluster hash tag, so
   `CROSSSLOT` errors occur on a clustered deployment. This affects
-  Redis Cluster and ElastiCache in cluster mode. A single-node Redis (or a
-  Sentinel-managed primary) works fine. If you need Cluster support, the key
-  scheme would have to change to use a hash tag — for example an id of
-  `{tenant-42}:export` produces `bq:{tenant-42}:export:meta`, and every key
-  derived from the same id would then land on the same slot. Note that the
-  global keys (`bq:global:wakeup`, `bq:pools`) are shared across all queues
-  and would still need special handling.
+  Redis Cluster and ElastiCache in cluster mode. A single-node Redis works
+  fine.
+
+  This was measured against a live 3-node Redis 7.4 cluster rather than
+  assumed:
+
+  ```
+  current key layout         -> CROSSSLOT Keys in request don't hash to the same slot
+  all queue keys, no globals -> OK
+  queue + bq:global:wakeup   -> CROSSSLOT
+  ```
+
+  The fix is a key-layout change plus a client-side notify fan-out. The full
+  analysis, the migration plan and the test plan are in
+  **[docs/CLUSTER-SUPPORT.md](docs/CLUSTER-SUPPORT.md)**.
+
+- **Redis Sentinel is not supported yet, but it is a small change.**
+  `ioredis` — the only Redis client this library uses — already exports
+  `SentinelConnector`, and connecting through a Sentinel was verified against
+  a live master/replica/sentinel setup. Adding it is a client-layer change
+  with no key or script changes, so it does not affect any existing
+  deployment. It is the recommended next step ahead of Cluster support.
 - **The reservoir interval is not aligned to a wall-clock schedule.** Because
   refills are applied lazily on the next dequeue or stats read, a bucket can
   refill slightly later than the exact interval boundary if the queue is
@@ -1399,7 +1415,7 @@ redis-cli KEYS 'bq:workers:notify:*'
 ## Requirements
 
 - **Node.js** ≥ 18
-- **Redis** ≥ 6 (single node, or a Sentinel-managed primary — **not** Redis Cluster)
+- **Redis** ≥ 6 (single node — **not** Redis Cluster and not Sentinel yet)
 - **TypeScript** ≥ 5 if you use the bundled type definitions
 
 Runtime dependencies: `ioredis` and `lru-cache`. Nothing else.
