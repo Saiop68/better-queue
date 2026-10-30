@@ -1,6 +1,6 @@
 {
   "name": "@destroyer777777/betterqueue",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Distributed rate limiter and job queue for Node.js. Redis-backed alternative to Bottleneck with cross-process priority, delayed jobs and crash recovery. Zero per-limiter timers, flat memory, works across multiple processes.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
