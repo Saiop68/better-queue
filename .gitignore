@@ -12,3 +12,4 @@ coverage/
 benchmark/results.json
 benchmark/users.json
 *.tgz
+RESUME.md
