@@ -34,7 +34,8 @@
     "test:watch": "vitest",
     "prepublishOnly": "npm run build",
     "prepare": "npm run build",
-    "benchmark": "node --expose-gc benchmark/compare.mjs"
+    "benchmark": "node --expose-gc benchmark/compare.mjs",
+    "test:sentinel": "vitest run --config vitest.sentinel.config.ts"
   },
   "keywords": [
     "rate-limiter",

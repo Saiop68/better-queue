@@ -50,6 +50,9 @@ jobs:
         run: npm run build
 
       - name: Test
+        # The Sentinel suites are excluded here (see vitest.config.ts): they
+        # need the redis-server/redis-cli binaries, which this job does not
+        # have. They run in the dedicated `sentinel` job below.
         run: npx vitest run
         env:
           REDIS_HOST: 127.0.0.1
@@ -85,7 +88,7 @@ jobs:
       - name: Run the Sentinel tests
         # The sentinel tests are self-contained: they create and destroy their
         # own topology on fixed local ports.
-        run: npx vitest run test/sentinel.test.ts test/sentinel-failover.test.ts
+        run: npx vitest run --config vitest.sentinel.config.ts
         env:
           REDIS_HOST: 127.0.0.1
           REDIS_PORT: 6379
